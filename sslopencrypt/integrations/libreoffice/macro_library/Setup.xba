@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="Setup" script:language="StarBasic" script:moduleType="normal">
+<![CDATA[
+' Setup.xba — sslOpenCrypt LibreOffice keyboard shortcut installer.
+'
+' Run by the Python installer via:
+'   soffice --headless --norestore --nofirststartwizard \
+'           'macro:///sslOpenCrypt.Setup.RegisterShortcuts'
+'
+' Registers four global keyboard shortcuts:
+'   Ctrl+Alt+S  →  sslOpenCrypt.Module1.SignDocument
+'   Ctrl+Alt+E  →  sslOpenCrypt.Module1.EncryptDocument
+'   Ctrl+Alt+H  →  sslOpenCrypt.Module1.HashDocument
+'   Ctrl+Alt+V  →  sslOpenCrypt.Module1.VerifySignature
+'
+' These are GLOBAL shortcuts (com.sun.star.ui.GlobalAcceleratorConfiguration)
+' so they work in Writer, Calc, Impress, Draw, and Base.
+
+Option Explicit
+
+' com.sun.star.awt.Key constants (decimal)
+Const KEY_S As Integer = 83
+Const KEY_E As Integer = 69
+Const KEY_H As Integer = 72
+Const KEY_V As Integer = 86
+
+' com.sun.star.awt.KeyModifier constants
+Const MOD_CTRL  As Integer = 2   ' MOD1 (Ctrl on Linux/Windows)
+Const MOD_ALT   As Integer = 4   ' MOD2
+Const MOD_CTRLALT As Integer = 6 ' MOD1 | MOD2
+
+Public Sub RegisterShortcuts()
+    On Error GoTo ErrOut
+
+    Dim oAccelCfg As Object
+    oAccelCfg = CreateUnoService("com.sun.star.ui.GlobalAcceleratorConfiguration")
+
+    ' Build the four shortcut → command mappings
+    Dim aShortcuts(3) As New com.sun.star.awt.KeyEvent
+    Dim aCmds(3) As String
+
+    ' Ctrl+Alt+S  → SignDocument
+    aShortcuts(0).KeyCode  = KEY_S
+    aShortcuts(0).Modifiers = MOD_CTRLALT
+    aCmds(0) = "macro:///sslOpenCrypt.Module1.SignDocument"
+
+    ' Ctrl+Alt+E  → EncryptDocument
+    aShortcuts(1).KeyCode  = KEY_E
+    aShortcuts(1).Modifiers = MOD_CTRLALT
+    aCmds(1) = "macro:///sslOpenCrypt.Module1.EncryptDocument"
+
+    ' Ctrl+Alt+H  → HashDocument
+    aShortcuts(2).KeyCode  = KEY_H
+    aShortcuts(2).Modifiers = MOD_CTRLALT
+    aCmds(2) = "macro:///sslOpenCrypt.Module1.HashDocument"
+
+    ' Ctrl+Alt+V  → VerifySignature
+    aShortcuts(3).KeyCode  = KEY_V
+    aShortcuts(3).Modifiers = MOD_CTRLALT
+    aCmds(3) = "macro:///sslOpenCrypt.Module1.VerifySignature"
+
+    ' Register each shortcut
+    Dim i As Integer
+    For i = 0 To 3
+        oAccelCfg.setKeyEvent(aShortcuts(i), aCmds(i))
+    Next i
+
+    ' Persist to disk
+    oAccelCfg.store()
+
+    ' Signal success by writing a marker file that the Python installer reads
+    Dim sMarker As String
+    Dim sTmpDir As String
+    sTmpDir = Environ("XDG_RUNTIME_DIR")
+    If sTmpDir = "" Then sTmpDir = "/tmp"
+    sMarker = sTmpDir & "/sslopencrypt_shortcuts_registered"
+    Dim iFile As Integer
+    iFile = FreeFile()
+    Open sMarker For Output As #iFile
+    Print #iFile, "OK"
+    Print #iFile, "Ctrl+Alt+S = SignDocument"
+    Print #iFile, "Ctrl+Alt+E = EncryptDocument"
+    Print #iFile, "Ctrl+Alt+H = HashDocument"
+    Print #iFile, "Ctrl+Alt+V = VerifySignature"
+    Close #iFile
+
+    ' Exit headless LibreOffice
+    StarDesktop.terminate()
+    Exit Sub
+
+ErrOut:
+    ' Write error to marker file so the Python installer can report it
+    Dim sTmpDir2 As String
+    sTmpDir2 = Environ("XDG_RUNTIME_DIR")
+    If sTmpDir2 = "" Then sTmpDir2 = "/tmp"
+    Dim sErrFile As String
+    sErrFile = sTmpDir2 & "/sslopencrypt_shortcuts_registered"
+    Dim iF As Integer
+    iF = FreeFile()
+    Open sErrFile For Output As #iF
+    Print #iF, "ERROR: " & Err & " - " & Error
+    Close #iF
+    StarDesktop.terminate()
+End Sub
+]]>
+</script:module>

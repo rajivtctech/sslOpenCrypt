@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="Module1" script:language="StarBasic" script:moduleType="normal">
+<![CDATA[
+' Module1 — sslOpenCrypt LibreOffice Integration
+'
+' Sign, verify, encrypt, and hash the active document via the sslOpenCrypt
+' IPC server running on localhost:47251.
+'
+' Keyboard shortcuts (registered by Setup.RegisterShortcuts):
+'   Ctrl+Alt+S  →  SignDocument
+'   Ctrl+Alt+E  →  EncryptDocument
+'   Ctrl+Alt+H  →  HashDocument
+'   Ctrl+Alt+V  →  VerifySignature
+'
+' The IPC server must be running:
+'   python3 /opt/sslopencrypt/integrations/libreoffice/ipc_server.py &
+
+Option Explicit
+
+Const IPC_HOST As String = "127.0.0.1"
+Const IPC_PORT As Integer = 47251
+
+' ---------------------------------------------------------------------------
+' Low-level: send a JSON request to the IPC server, return JSON response
+' ---------------------------------------------------------------------------
+Private Function SendRequest(sJson As String) As String
+    Dim sResponse As String
+    Dim sTmpOut As String
+    On Error GoTo ErrHandler
+
+    ' Write temp file path — use XDG_RUNTIME_DIR if available, else /tmp
+    Dim sTmpDir As String
+    sTmpDir = Environ("XDG_RUNTIME_DIR")
+    If sTmpDir = "" Then sTmpDir = "/tmp"
+    sTmpOut = sTmpDir & "/sslopencrypt_response.json"
+
+    ' Escape the JSON for embedding in a shell argument
+    ' (replace single quotes; JSON from us never has shell-special chars other than that)
+    Dim sSafeJson As String
+    sSafeJson = Join(Split(sJson, "'"), "'\\''")
+
+    ' Build python3 one-liner that talks to the IPC server and writes the response
+    Dim sCmd As String
+    sCmd = "python3 -c '" & _
+        "import socket,json,sys;" & _
+        "s=socket.create_connection((""" & IPC_HOST & """," & CStr(IPC_PORT) & "),timeout=30);" & _
+        "s.sendall(('" & sSafeJson & "'+chr(10)).encode());" & _
+        "d=b'';" & _
+        Chr(10) & _
+        "while b""\n"" not in d: d+=s.recv(4096);" & _
+        Chr(10) & _
+        "open(""" & sTmpOut & """,""w"").write(d.split(b""\n"")[0].decode())" & _
+        "'"
+
+    Shell "bash -c " & Chr(34) & sCmd & Chr(34)
+    Wait 1800  ' give Python time to finish
+
+    ' Read the response file
+    Dim iFile As Integer
+    iFile = FreeFile()
+    Dim sLine As String
+    Open sTmpOut For Input As #iFile
+    Do While Not EOF(iFile)
+        Line Input #iFile, sLine
+        sResponse = sResponse & sLine
+    Loop
+    Close #iFile
+
+    SendRequest = sResponse
+    Exit Function
+
+ErrHandler:
+    SendRequest = "{""success"":false,""error"":""IPC connection failed. Is the sslOpenCrypt server running?""}"
+End Function
+
+' ---------------------------------------------------------------------------
+' Parse a string value from a flat JSON object
+' ---------------------------------------------------------------------------
+Private Function JsonGet(sJson As String, sKey As String) As String
+    Dim sSearch As String
+    sSearch = Chr(34) & sKey & Chr(34) & ":"
+    Dim iStart As Long, iEnd As Long
+    iStart = InStr(sJson, sSearch)
+    If iStart = 0 Then JsonGet = "" : Exit Function
+    iStart = iStart + Len(sSearch)
+    Do While Mid(sJson, iStart, 1) = " " Or Mid(sJson, iStart, 1) = Chr(9)
+        iStart = iStart + 1
+    Loop
+    If Mid(sJson, iStart, 1) = Chr(34) Then
+        iStart = iStart + 1
+        iEnd = InStr(iStart, sJson, Chr(34))
+        JsonGet = Mid(sJson, iStart, iEnd - iStart)
+    Else
+        iEnd = InStr(iStart, sJson, ",")
+        If iEnd = 0 Then iEnd = InStr(iStart, sJson, "}")
+        If iEnd = 0 Then iEnd = Len(sJson) + 1
+        JsonGet = Trim(Mid(sJson, iStart, iEnd - iStart))
+    End If
+End Function
+
+' ---------------------------------------------------------------------------
+' Helper: path of the active document (saves the document first if modified)
+' ---------------------------------------------------------------------------
+Private Function ActiveDocPath() As String
+    Dim oDoc As Object
+    oDoc = ThisComponent
+    If IsNull(oDoc) Or IsEmpty(oDoc) Then
+        MsgBox "No document is open.", MB_OK + MB_ICONEXCLAMATION, "sslOpenCrypt"
+        ActiveDocPath = "" : Exit Function
+    End If
+    ' Auto-save if modified so the file on disk is current
+    If oDoc.isModified() Then
+        oDoc.store()
+    End If
+    Dim sUrl As String
+    sUrl = oDoc.getURL()
+    If sUrl = "" Then
+        MsgBox "Please save the document before performing cryptographic operations.", _
+               MB_OK + MB_ICONEXCLAMATION, "sslOpenCrypt"
+        ActiveDocPath = "" : Exit Function
+    End If
+    ActiveDocPath = ConvertFromURL(sUrl)
+End Function
+
+' ---------------------------------------------------------------------------
+' Public macros — bound to Ctrl+Alt+S / E / H / V
+' ---------------------------------------------------------------------------
+
+' Ctrl+Alt+S — Sign the active document
+Public Sub SignDocument()
+    Dim sFile As String
+    sFile = ActiveDocPath()
+    If sFile = "" Then Exit Sub
+
+    Dim sResp As String
+    sResp = SendRequest("{""op"":""sign"",""file"":""" & sFile & """}")
+
+    If JsonGet(sResp, "success") = "true" Then
+        MsgBox "Document signed successfully." & Chr(13) & _
+               "Signature: " & JsonGet(sResp, "output"), _
+               MB_OK + MB_ICONINFORMATION, "sslOpenCrypt — Signed"
+    Else
+        MsgBox "Signing failed:" & Chr(13) & JsonGet(sResp, "error"), _
+               MB_OK + MB_ICONEXCLAMATION, "sslOpenCrypt — Error"
+    End If
+End Sub
+
+' Ctrl+Alt+V — Verify signature for the active document
+Public Sub VerifySignature()
+    Dim sFile As String
+    sFile = ActiveDocPath()
+    If sFile = "" Then Exit Sub
+
+    Dim sSigFile As String
+    sSigFile = InputBox("Signature file (.p7s):", "sslOpenCrypt — Verify", sFile & ".p7s")
+    If sSigFile = "" Then Exit Sub
+
+    Dim sResp As String
+    sResp = SendRequest("{""op"":""verify"",""file"":""" & sFile & """," & _
+                        """signature"":""" & sSigFile & """}")
+
+    If JsonGet(sResp, "success") = "true" Then
+        MsgBox "Signature VALID." & Chr(13) & JsonGet(sResp, "result"), _
+               MB_OK + MB_ICONINFORMATION, "sslOpenCrypt — Verified"
+    Else
+        MsgBox "Signature INVALID or verification failed:" & Chr(13) & _
+               JsonGet(sResp, "error"), _
+               MB_OK + MB_ICONEXCLAMATION, "sslOpenCrypt — Verification Failed"
+    End If
+End Sub
+
+' Ctrl+Alt+H — Hash the active document
+Public Sub HashDocument()
+    Dim sFile As String
+    sFile = ActiveDocPath()
+    If sFile = "" Then Exit Sub
+
+    Dim sAlg As String
+    sAlg = InputBox("Hash algorithm:", "sslOpenCrypt — Hash", "SHA-256")
+    If sAlg = "" Then sAlg = "SHA-256"
+
+    Dim sResp As String
+    sResp = SendRequest("{""op"":""hash"",""file"":""" & sFile & """," & _
+                        """algorithm"":""" & sAlg & """}")
+
+    If JsonGet(sResp, "success") = "true" Then
+        MsgBox sAlg & " digest:" & Chr(13) & Chr(13) & JsonGet(sResp, "result"), _
+               MB_OK + MB_ICONINFORMATION, "sslOpenCrypt — Hash"
+    Else
+        MsgBox "Hash failed:" & Chr(13) & JsonGet(sResp, "error"), _
+               MB_OK + MB_ICONEXCLAMATION, "sslOpenCrypt — Error"
+    End If
+End Sub
+
+' Ctrl+Alt+E — Encrypt the active document
+Public Sub EncryptDocument()
+    Dim sFile As String
+    sFile = ActiveDocPath()
+    If sFile = "" Then Exit Sub
+
+    Dim sPass As String
+    sPass = InputBox("Passphrase for encryption:", "sslOpenCrypt — Encrypt", "")
+    If sPass = "" Then
+        MsgBox "Encryption cancelled (no passphrase entered).", MB_OK, "sslOpenCrypt"
+        Exit Sub
+    End If
+
+    Dim sOutput As String
+    sOutput = sFile & ".enc"
+
+    Dim sResp As String
+    sResp = SendRequest("{""op"":""encrypt"",""file"":""" & sFile & """," & _
+                        """output"":""" & sOutput & """," & _
+                        """cipher"":""AES-256-GCM""," & _
+                        """passphrase"":""" & sPass & """}")
+
+    If JsonGet(sResp, "success") = "true" Then
+        MsgBox "Document encrypted." & Chr(13) & "Output: " & sOutput, _
+               MB_OK + MB_ICONINFORMATION, "sslOpenCrypt — Encrypted"
+    Else
+        MsgBox "Encryption failed:" & Chr(13) & JsonGet(sResp, "error"), _
+               MB_OK + MB_ICONEXCLAMATION, "sslOpenCrypt — Error"
+    End If
+End Sub
+]]>
+</script:module>

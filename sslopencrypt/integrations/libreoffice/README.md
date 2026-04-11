@@ -1,28 +1,54 @@
 # sslOpenCrypt — LibreOffice Integration
 
-Sign, verify, encrypt, and hash LibreOffice documents without leaving the application.
+Sign, verify, encrypt, and hash LibreOffice documents with a single keypress — no menu diving, no LibreOffice UI setup required.
+
+## Quick start (zero-configuration)
+
+```bash
+# 1. Install keyboard shortcuts (one-time, ~5 seconds)
+python3 install_libreoffice.py
+
+# 2. Start the IPC server (keep running in background)
+python3 ipc_server.py &
+```
+
+That's it. Open any LibreOffice document and use:
+
+| Shortcut | Action |
+|---|---|
+| **Ctrl+Alt+S** | Sign document (creates `<docname>.p7s`) |
+| **Ctrl+Alt+E** | Encrypt document (AES-256-GCM, creates `<docname>.enc`) |
+| **Ctrl+Alt+H** | Hash document (SHA-256 digest) |
+| **Ctrl+Alt+V** | Verify signature |
+
+Shortcuts work in Writer, Calc, Impress, Draw, and Base.
 
 ## Architecture
 
 ```
-LibreOffice Basic macro  ──JSON/TCP──▶  IPC server (localhost:47251)  ──▶  sslOpenCrypt modules
-(sslopencrypt_macro.bas)               (ipc_server.py)                      (signing, symmetric…)
+LibreOffice keypress  ─────────▶  Basic macro (Module1.xba)
+(Ctrl+Alt+S/E/H/V)               ─JSON/TCP──▶  IPC server (localhost:47251)
+                                               ─────────▶  sslOpenCrypt modules
 ```
 
-The IPC server binds **only to 127.0.0.1** — it is not accessible from the network.
+The IPC server binds **only to 127.0.0.1** — not accessible from the network.
 
-## Setup
+## What the installer does
 
-### 1. Start the IPC server
+`install_libreoffice.py` performs three steps with no user interaction:
+
+1. **Copies macro library** — installs `Module1.xba` and `Setup.xba` to
+   `~/.config/libreoffice/4/user/Scripts/basic/sslOpenCrypt/`
+
+2. **Registers shortcuts** — launches LibreOffice headless and runs
+   `sslOpenCrypt.Setup.RegisterShortcuts` which calls
+   `com.sun.star.ui.GlobalAcceleratorConfiguration` to bind Ctrl+Alt+S/E/H/V
+
+3. **Verifies** — checks that shortcuts were registered successfully
+
+## Auto-start the IPC server on login
 
 ```bash
-# System install
-python3 /opt/sslopencrypt/integrations/libreoffice/ipc_server.py &
-
-# User install
-python3 ~/.local/lib/sslopencrypt/integrations/libreoffice/ipc_server.py &
-
-# Auto-start via systemd user service (recommended)
 cat > ~/.config/systemd/user/sslopencrypt-ipc.service <<EOF
 [Unit]
 Description=sslOpenCrypt LibreOffice IPC Server
@@ -37,38 +63,25 @@ EOF
 systemctl --user enable --now sslopencrypt-ipc
 ```
 
-### 2. Install the LibreOffice macro
+## Remove
 
-1. Open LibreOffice Writer (or Calc, Impress…).
-2. Go to **Tools → Macros → Edit Macros…**
-3. In the Basic IDE, create a new module: right-click **My Macros** → **Insert Module**.
-4. Name it `sslOpenCrypt` and paste the contents of `sslopencrypt_macro.bas`.
-5. Close the Basic IDE.
+```bash
+python3 install_libreoffice.py --remove
+```
 
-### 3. Assign macros to menu or toolbar
+This removes the macro library. To clear the keyboard shortcuts:
+Tools → Customise → Keyboard → remove the Ctrl+Alt+S/E/H/V bindings.
 
-Go to **Tools → Customise**. In the **Menus** or **Toolbars** tab, add entries pointing to the macros:
+## Manual installation (alternative)
 
-| Macro name | Suggested label |
-|---|---|
-| `sslOpenCrypt.Module1.SignDocument` | Sign Document |
-| `sslOpenCrypt.Module1.VerifySignature` | Verify Signature |
-| `sslOpenCrypt.Module1.HashDocument` | Hash Document |
-| `sslOpenCrypt.Module1.EncryptDocument` | Encrypt Document |
-| `sslOpenCrypt.Module1.CheckServer` | Check sslOpenCrypt Server |
+If the auto-installer doesn't work on your system:
 
-## Operations
-
-| Operation | Description |
-|---|---|
-| **Sign** | Creates `<docname>.p7s` CMS/PKCS#7 detached signature |
-| **Verify** | Verifies a `.p7s` signature against the document |
-| **Hash** | Computes SHA-256 (or chosen algorithm) of the saved document |
-| **Encrypt** | Encrypts the document with AES-256-GCM |
+1. Copy `macro_library/` contents to
+   `~/.config/libreoffice/4/user/Scripts/basic/sslOpenCrypt/`
+2. Open LibreOffice → Tools → Macros → Organise Basic Macros
+3. Locate `sslOpenCrypt.Setup.RegisterShortcuts` and run it
 
 ## IPC Protocol
-
-The macro communicates with the server via newline-delimited JSON:
 
 **Request:**
 ```json
@@ -80,8 +93,11 @@ The macro communicates with the server via newline-delimited JSON:
 {"success": true, "command": "openssl cms ...", "result": "...", "output": "/home/user/contract.odt.p7s", "error": ""}
 ```
 
+Operations: `sign`, `verify`, `hash`, `encrypt`, `decrypt`
+
 ## Security Notes
 
-- The IPC server runs on `127.0.0.1:47251` only — no network exposure.
+- IPC server binds to `127.0.0.1:47251` only — no network exposure.
 - Passphrases are passed in the JSON request and are never written to disk or to the audit log.
-- All temp files created during operations use `tempfile.mkstemp()` with mode `0o600`.
+- The active document is auto-saved before any cryptographic operation.
+- All temp files use `tempfile.mkstemp()` with mode `0o600`.

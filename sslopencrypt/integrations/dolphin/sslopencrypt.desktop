@@ -1,0 +1,34 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=application/octet-stream;application/pdf;text/plain;text/html;image/png;image/jpeg;application/vnd.oasis.opendocument.text;application/vnd.oasis.opendocument.spreadsheet;application/zip;all/allfiles;
+Actions=sign;verify;encrypt;decrypt;hash;
+X-KDE-Submenu=sslOpenCrypt
+X-KDE-Priority=TopLevel
+X-KDE-Icon=security-high
+Icon=security-high
+
+[Desktop Action sign]
+Name=Sign File…
+Icon=document-sign
+Exec=bash -c 'sslopencrypt --mode sign --file %F 2>/dev/null || python3 ~/.local/lib/sslopencrypt/main.py --mode sign --file %F 2>/dev/null || python3 /opt/sslopencrypt/main.py --mode sign --file %F'
+
+[Desktop Action verify]
+Name=Verify Signature…
+Icon=document-sign
+Exec=bash -c 'sslopencrypt --mode sign --file %F 2>/dev/null || python3 ~/.local/lib/sslopencrypt/main.py --mode sign --file %F 2>/dev/null || python3 /opt/sslopencrypt/main.py --mode sign --file %F'
+
+[Desktop Action encrypt]
+Name=Encrypt…
+Icon=document-encrypt
+Exec=bash -c 'sslopencrypt --mode symmetric --file %F 2>/dev/null || python3 ~/.local/lib/sslopencrypt/main.py --mode symmetric --file %F 2>/dev/null || python3 /opt/sslopencrypt/main.py --mode symmetric --file %F'
+
+[Desktop Action decrypt]
+Name=Decrypt…
+Icon=document-decrypt
+Exec=bash -c 'sslopencrypt --mode symmetric --file %F 2>/dev/null || python3 ~/.local/lib/sslopencrypt/main.py --mode symmetric --file %F 2>/dev/null || python3 /opt/sslopencrypt/main.py --mode symmetric --file %F'
+
+[Desktop Action hash]
+Name=Compute SHA-256…
+Icon=document-properties
+Exec=bash -c '~/.local/share/kio/servicemenus/sslopencrypt-hash.sh %F'
