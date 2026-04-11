@@ -2,106 +2,237 @@
 <!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
 <script:module xmlns:script="http://openoffice.org/2000/script" script:name="Setup" script:language="StarBasic" script:moduleType="normal">
 <![CDATA[
-' Setup.xba — sslOpenCrypt LibreOffice keyboard shortcut installer.
+' Setup.xba — sslOpenCrypt LibreOffice installer macro.
 '
-' Run by the Python installer via:
+' Called headlessly by install_libreoffice.py:
 '   soffice --headless --norestore --nofirststartwizard \
 '           'macro:///sslOpenCrypt.Setup.RegisterShortcuts'
 '
-' Registers four global keyboard shortcuts:
-'   Ctrl+Alt+S  →  sslOpenCrypt.Module1.SignDocument
-'   Ctrl+Alt+E  →  sslOpenCrypt.Module1.EncryptDocument
-'   Ctrl+Alt+H  →  sslOpenCrypt.Module1.HashDocument
-'   Ctrl+Alt+V  →  sslOpenCrypt.Module1.VerifySignature
-'
-' These are GLOBAL shortcuts (com.sun.star.ui.GlobalAcceleratorConfiguration)
-' so they work in Writer, Calc, Impress, Draw, and Base.
+' What this does:
+'   1. Registers Ctrl+Alt+S/E/H/V as global keyboard shortcuts.
+'   2. Registers an SVG icon for each command (appears in menu/toolbar).
+'   3. Creates the "sslOpenCrypt" toolbar for Writer, Calc, Impress, and Draw.
+'   4. Writes a marker file so the Python installer can confirm success.
 
 Option Explicit
 
-' com.sun.star.awt.Key constants (decimal)
+' ── Key codes (com.sun.star.awt.Key) ─────────────────────────────────────────
 Const KEY_S As Integer = 83
 Const KEY_E As Integer = 69
 Const KEY_H As Integer = 72
 Const KEY_V As Integer = 86
 
-' com.sun.star.awt.KeyModifier constants
-Const MOD_CTRL  As Integer = 2   ' MOD1 (Ctrl on Linux/Windows)
-Const MOD_ALT   As Integer = 4   ' MOD2
-Const MOD_CTRLALT As Integer = 6 ' MOD1 | MOD2
+' ── Modifier bitmask (MOD1=Ctrl=2, MOD2=Alt=4) ───────────────────────────────
+Const MOD_CTRL_ALT As Integer = 6
 
+' ── LO module IDs for which to create the toolbar ────────────────────────────
+' (same 4 that ModuleUIConfigurationManagerSupplier recognises)
+
+' ── Macro command URLs ────────────────────────────────────────────────────────
+Const CMD_SIGN    As String = "macro:///sslOpenCrypt.Module1.SignDocument"
+Const CMD_ENCRYPT As String = "macro:///sslOpenCrypt.Module1.EncryptDocument"
+Const CMD_HASH    As String = "macro:///sslOpenCrypt.Module1.HashDocument"
+Const CMD_VERIFY  As String = "macro:///sslOpenCrypt.Module1.VerifySignature"
+
+' ─────────────────────────────────────────────────────────────────────────────
+' Entry point — called by the installer
+' ─────────────────────────────────────────────────────────────────────────────
 Public Sub RegisterShortcuts()
     On Error GoTo ErrOut
 
-    Dim oAccelCfg As Object
-    oAccelCfg = CreateUnoService("com.sun.star.ui.GlobalAcceleratorConfiguration")
+    ' ── 1. Global keyboard shortcuts ─────────────────────────────────────────
+    Dim oAccel As Object
+    oAccel = CreateUnoService("com.sun.star.ui.GlobalAcceleratorConfiguration")
 
-    ' Build the four shortcut → command mappings
-    Dim aShortcuts(3) As New com.sun.star.awt.KeyEvent
+    Dim aKeys(3) As New com.sun.star.awt.KeyEvent
     Dim aCmds(3) As String
 
-    ' Ctrl+Alt+S  → SignDocument
-    aShortcuts(0).KeyCode  = KEY_S
-    aShortcuts(0).Modifiers = MOD_CTRLALT
-    aCmds(0) = "macro:///sslOpenCrypt.Module1.SignDocument"
+    aKeys(0).KeyCode = KEY_S : aKeys(0).Modifiers = MOD_CTRL_ALT : aCmds(0) = CMD_SIGN
+    aKeys(1).KeyCode = KEY_E : aKeys(1).Modifiers = MOD_CTRL_ALT : aCmds(1) = CMD_ENCRYPT
+    aKeys(2).KeyCode = KEY_H : aKeys(2).Modifiers = MOD_CTRL_ALT : aCmds(2) = CMD_HASH
+    aKeys(3).KeyCode = KEY_V : aKeys(3).Modifiers = MOD_CTRL_ALT : aCmds(3) = CMD_VERIFY
 
-    ' Ctrl+Alt+E  → EncryptDocument
-    aShortcuts(1).KeyCode  = KEY_E
-    aShortcuts(1).Modifiers = MOD_CTRLALT
-    aCmds(1) = "macro:///sslOpenCrypt.Module1.EncryptDocument"
-
-    ' Ctrl+Alt+H  → HashDocument
-    aShortcuts(2).KeyCode  = KEY_H
-    aShortcuts(2).Modifiers = MOD_CTRLALT
-    aCmds(2) = "macro:///sslOpenCrypt.Module1.HashDocument"
-
-    ' Ctrl+Alt+V  → VerifySignature
-    aShortcuts(3).KeyCode  = KEY_V
-    aShortcuts(3).Modifiers = MOD_CTRLALT
-    aCmds(3) = "macro:///sslOpenCrypt.Module1.VerifySignature"
-
-    ' Register each shortcut
     Dim i As Integer
     For i = 0 To 3
-        oAccelCfg.setKeyEvent(aShortcuts(i), aCmds(i))
+        oAccel.setKeyEvent(aKeys(i), aCmds(i))
     Next i
+    oAccel.store()
 
-    ' Persist to disk
-    oAccelCfg.store()
+    ' ── 2. Icons + toolbar ───────────────────────────────────────────────────
+    Dim sIconDir As String
+    sIconDir = _FindIconDir()
+    If sIconDir <> "" Then
+        _RegisterIconsAndToolbar(sIconDir)
+    End If
 
-    ' Signal success by writing a marker file that the Python installer reads
-    Dim sMarker As String
-    Dim sTmpDir As String
-    sTmpDir = Environ("XDG_RUNTIME_DIR")
-    If sTmpDir = "" Then sTmpDir = "/tmp"
-    sMarker = sTmpDir & "/sslopencrypt_shortcuts_registered"
-    Dim iFile As Integer
-    iFile = FreeFile()
-    Open sMarker For Output As #iFile
-    Print #iFile, "OK"
-    Print #iFile, "Ctrl+Alt+S = SignDocument"
-    Print #iFile, "Ctrl+Alt+E = EncryptDocument"
-    Print #iFile, "Ctrl+Alt+H = HashDocument"
-    Print #iFile, "Ctrl+Alt+V = VerifySignature"
-    Close #iFile
+    ' ── 3. Write success marker ───────────────────────────────────────────────
+    _WriteMarker("OK" & Chr(10) & _
+                 "Ctrl+Alt+S = SignDocument" & Chr(10) & _
+                 "Ctrl+Alt+E = EncryptDocument" & Chr(10) & _
+                 "Ctrl+Alt+H = HashDocument" & Chr(10) & _
+                 "Ctrl+Alt+V = VerifySignature")
 
-    ' Exit headless LibreOffice
     StarDesktop.terminate()
     Exit Sub
 
 ErrOut:
-    ' Write error to marker file so the Python installer can report it
-    Dim sTmpDir2 As String
-    sTmpDir2 = Environ("XDG_RUNTIME_DIR")
-    If sTmpDir2 = "" Then sTmpDir2 = "/tmp"
-    Dim sErrFile As String
-    sErrFile = sTmpDir2 & "/sslopencrypt_shortcuts_registered"
-    Dim iF As Integer
-    iF = FreeFile()
-    Open sErrFile For Output As #iF
-    Print #iF, "ERROR: " & Err & " - " & Error
-    Close #iF
+    _WriteMarker("ERROR: " & Err & " — " & Error)
     StarDesktop.terminate()
+End Sub
+
+' ─────────────────────────────────────────────────────────────────────────────
+' Locate the icons/ directory (installed alongside the XBA files)
+' ─────────────────────────────────────────────────────────────────────────────
+Private Function _FindIconDir() As String
+    ' Try a set of standard profile paths.  Return the system path (not URL).
+    Dim sHome As String
+    sHome = Environ("HOME")
+
+    Dim aCandidates(2) As String
+    aCandidates(0) = sHome & "/.config/libreoffice/4/user/Scripts/basic/sslOpenCrypt/icons"
+    aCandidates(1) = sHome & "/.libreoffice/4/user/Scripts/basic/sslOpenCrypt/icons"
+    aCandidates(2) = sHome & "/.config/libreoffice/3/user/Scripts/basic/sslOpenCrypt/icons"
+
+    Dim j As Integer
+    For j = 0 To 2
+        If Dir(aCandidates(j) & "/sign.svg") <> "" Then
+            ' Return as file URL (trailing slash)
+            _FindIconDir = ConvertToURL(aCandidates(j)) & "/"
+            Exit Function
+        End If
+    Next j
+    _FindIconDir = ""
+End Function
+
+' ─────────────────────────────────────────────────────────────────────────────
+' Register icons with each module's ImageManager and create the toolbar
+' ─────────────────────────────────────────────────────────────────────────────
+Private Sub _RegisterIconsAndToolbar(sIconDir As String)
+    ' Build parallel arrays: icon file URLs, command URLs, button labels
+    Dim aIconURLs(3) As String
+    aIconURLs(0) = sIconDir & "sign.svg"
+    aIconURLs(1) = sIconDir & "encrypt.svg"
+    aIconURLs(2) = sIconDir & "hash.svg"
+    aIconURLs(3) = sIconDir & "verify.svg"
+
+    Dim aCmds(3) As String
+    aCmds(0) = CMD_SIGN
+    aCmds(1) = CMD_ENCRYPT
+    aCmds(2) = CMD_HASH
+    aCmds(3) = CMD_VERIFY
+
+    Dim aLabels(3) As String
+    aLabels(0) = "Sign  Ctrl+Alt+S"
+    aLabels(1) = "Encrypt  Ctrl+Alt+E"
+    aLabels(2) = "Hash  Ctrl+Alt+H"
+    aLabels(3) = "Verify  Ctrl+Alt+V"
+
+    ' Load SVG graphics via GraphicProvider
+    Dim oGP As Object
+    oGP = CreateUnoService("com.sun.star.graphic.GraphicProvider")
+
+    Dim aGraphics(3) As Object
+    Dim k As Integer
+    For k = 0 To 3
+        Dim aLoadArgs(0) As New com.sun.star.beans.PropertyValue
+        aLoadArgs(0).Name  = "URL"
+        aLoadArgs(0).Value = aIconURLs(k)
+        On Error Resume Next
+        aGraphics(k) = oGP.queryGraphic(aLoadArgs())
+        On Error GoTo 0
+    Next k
+
+    ' Module types to configure
+    Dim aModules(3) As String
+    aModules(0) = "com.sun.star.text.TextDocument"
+    aModules(1) = "com.sun.star.sheet.SpreadsheetDocument"
+    aModules(2) = "com.sun.star.presentation.PresentationDocument"
+    aModules(3) = "com.sun.star.drawing.DrawingDocument"
+
+    Dim oSupplier As Object
+    oSupplier = CreateUnoService("com.sun.star.ui.ModuleUIConfigurationManagerSupplier")
+
+    Const TB_URL As String = "private:resource/toolbar/sslopencrypt"
+
+    Dim m As Integer
+    For m = 0 To 3
+        On Error Resume Next
+        Dim oCfgMgr As Object
+        oCfgMgr = oSupplier.getUIConfigurationManager(aModules(m))
+        If Err <> 0 Or IsNull(oCfgMgr) Or IsEmpty(oCfgMgr) Then
+            Err = 0 : On Error GoTo 0
+        Else
+            On Error GoTo 0
+
+            ' ── 2a. Register icons (small = 0, large = 1) ────────────────────
+            On Error Resume Next
+            Dim oImgMgr As Object
+            oImgMgr = oCfgMgr.getImageManager()
+            If Err = 0 And Not IsNull(oImgMgr) Then
+                ' Insert each icon individually so one bad SVG can't block others
+                Dim n As Integer
+                For n = 0 To 3
+                    If Not IsNull(aGraphics(n)) And Not IsEmpty(aGraphics(n)) Then
+                        Dim aSingleCmd(0) As String
+                        Dim aSingleGfx(0) As Object
+                        aSingleCmd(0) = aCmds(n)
+                        aSingleGfx(0) = aGraphics(n)
+                        oImgMgr.insertImages(0, aSingleCmd(), aSingleGfx())  ' small
+                        oImgMgr.insertImages(1, aSingleCmd(), aSingleGfx())  ' large
+                    End If
+                Next n
+                oImgMgr.store()
+            End If
+            Err = 0 : On Error GoTo 0
+
+            ' ── 2b. Create / replace the sslOpenCrypt toolbar ─────────────────
+            On Error Resume Next
+            Dim oTB As Object
+            oTB = oCfgMgr.createSettings()
+
+            If Err = 0 And Not IsNull(oTB) Then
+                ' Add a button for each operation
+                Dim p As Integer
+                For p = 0 To 3
+                    Dim aItem(4) As New com.sun.star.beans.PropertyValue
+                    aItem(0).Name  = "CommandURL" : aItem(0).Value = aCmds(p)
+                    aItem(1).Name  = "Label"      : aItem(1).Value = aLabels(p)
+                    aItem(2).Name  = "Type"       : aItem(2).Value = 1      ' button
+                    aItem(3).Name  = "Style"      : aItem(3).Value = 0      ' icon (follows system setting)
+                    aItem(4).Name  = "IsVisible"  : aItem(4).Value = True
+                    oTB.insertByIndex(p, aItem())
+                Next p
+
+                If oCfgMgr.hasSettings(TB_URL) Then
+                    oCfgMgr.replaceSettings(TB_URL, oTB)
+                Else
+                    oCfgMgr.insertSettings(TB_URL, oTB)
+                End If
+                oCfgMgr.store()
+            End If
+            Err = 0 : On Error GoTo 0
+        End If
+    Next m
+End Sub
+
+' ─────────────────────────────────────────────────────────────────────────────
+' Write the success/error marker that install_libreoffice.py polls for
+' ─────────────────────────────────────────────────────────────────────────────
+Private Sub _WriteMarker(sContent As String)
+    Dim sTmpDir As String
+    sTmpDir = Environ("XDG_RUNTIME_DIR")
+    If sTmpDir = "" Then sTmpDir = "/tmp"
+
+    Dim sPath As String
+    sPath = sTmpDir & "/sslopencrypt_shortcuts_registered"
+
+    On Error Resume Next
+    Dim iFile As Integer
+    iFile = FreeFile()
+    Open sPath For Output As #iFile
+    Print #iFile, sContent
+    Close #iFile
+    On Error GoTo 0
 End Sub
 ]]>
 </script:module>

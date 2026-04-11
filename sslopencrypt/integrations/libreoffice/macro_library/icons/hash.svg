@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Left vertical bar (slightly slanted, classic # style) -->
+  <line x1="9"  y1="4"  x2="7"  y2="20"
+        stroke="#1565C0" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- Right vertical bar -->
+  <line x1="15" y1="4"  x2="13" y2="20"
+        stroke="#1565C0" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- Top horizontal bar -->
+  <line x1="4"  y1="9"  x2="20" y2="9"
+        stroke="#1565C0" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- Bottom horizontal bar -->
+  <line x1="4"  y1="15" x2="20" y2="15"
+        stroke="#1565C0" stroke-width="2.2" stroke-linecap="round"/>
+</svg>

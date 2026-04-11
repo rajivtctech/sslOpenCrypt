@@ -14,14 +14,17 @@ python3 ipc_server.py &
 
 That's it. Open any LibreOffice document and use:
 
-| Shortcut | Action |
-|---|---|
-| **Ctrl+Alt+S** | Sign document (creates `<docname>.p7s`) |
-| **Ctrl+Alt+E** | Encrypt document (AES-256-GCM, creates `<docname>.enc`) |
-| **Ctrl+Alt+H** | Hash document (SHA-256 digest) |
-| **Ctrl+Alt+V** | Verify signature |
+| Shortcut | Icon | Action |
+|---|---|---|
+| **Ctrl+Alt+S** | ![sign](macro_library/icons/sign.svg) | Sign document (creates `<docname>.p7s`) |
+| **Ctrl+Alt+E** | ![encrypt](macro_library/icons/encrypt.svg) | Encrypt document (AES-256-GCM, creates `<docname>.enc`) |
+| **Ctrl+Alt+H** | ![hash](macro_library/icons/hash.svg) | Hash document (SHA-256 digest) |
+| **Ctrl+Alt+V** | ![verify](macro_library/icons/verify.svg) | Verify signature |
 
 Shortcuts work in Writer, Calc, Impress, Draw, and Base.
+
+A toolbar with the four icon buttons is also installed. Enable it via:
+**View → Toolbars → sslOpenCrypt**
 
 ## Architecture
 

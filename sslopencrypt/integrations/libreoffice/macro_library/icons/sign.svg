@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Document with folded corner -->
+  <path d="M5 3h9l5 5v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"
+        fill="none" stroke="#1565C0" stroke-width="1.5"/>
+  <path d="M14 3v5h5" fill="none" stroke="#1565C0" stroke-width="1.5"/>
+  <!-- Signature / pen stroke -->
+  <path d="M7 17 Q9.5 14 12 16 Q14 17.5 16.5 14"
+        fill="none" stroke="#1565C0" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Pen tip dot -->
+  <circle cx="16.5" cy="14" r="1.2" fill="#1565C0"/>
+</svg>

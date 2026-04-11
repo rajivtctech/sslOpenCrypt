@@ -105,13 +105,20 @@ def install(profile: Path, soffice: str) -> int:
     print(f"  soffice binary      : {soffice}")
     print()
 
-    # 1. Copy XBA files
+    # 1. Copy XBA files and icons/
     print("Step 1/3 — Copying macro library files…")
     dest.mkdir(parents=True, exist_ok=True)
     for src_file in MACRO_LIB_SRC.iterdir():
         dst_file = dest / src_file.name
-        shutil.copy2(src_file, dst_file)
-        print(f"  Copied: {dst_file.name}")
+        if src_file.is_dir():
+            if dst_file.exists():
+                shutil.rmtree(dst_file)
+            shutil.copytree(src_file, dst_file)
+            icon_count = sum(1 for _ in dst_file.iterdir())
+            print(f"  Copied: {dst_file.name}/  ({icon_count} files)")
+        else:
+            shutil.copy2(src_file, dst_file)
+            print(f"  Copied: {dst_file.name}")
 
     # 2. Register library in the LO user profile (registrymodifications.xcu)
     #    LibreOffice auto-discovers libraries in Scripts/basic/ — no XCU edit needed.
@@ -185,6 +192,8 @@ def install(profile: Path, soffice: str) -> int:
     print("Keyboard shortcuts active in all LibreOffice documents:")
     for shortcut, macro in SHORTCUTS:
         print(f"    {shortcut}  →  {macro}")
+    print()
+    print("Toolbar: View → Toolbars → sslOpenCrypt (Writer / Calc / Impress / Draw)")
     print()
     print("The IPC server must be running for shortcuts to work:")
     print(f"    python3 {SCRIPT_DIR}/ipc_server.py &")
