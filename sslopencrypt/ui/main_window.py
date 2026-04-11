@@ -35,6 +35,7 @@ from .panels.edu_panel import EduPanel
 from .panels.gpg_panel import GPGPanel
 from .panels.vault_panel import VaultPanel
 from .panels.india_dsc_panel import IndiaDSCPanel
+from .panels.integrations_panel import IntegrationsPanel
 
 from core.executor import get_openssl_path, openssl_version
 from core.audit_log import export_log
@@ -293,6 +294,7 @@ QPushButton:hover { background: #4B5563; }
             ("gpg",      GPGPanel),
             ("vault",    VaultPanel),
             ("india_dsc", IndiaDSCPanel),
+            ("integrations", IntegrationsPanel),
         ]
         for module_id, PanelClass in panel_classes:
             scroll = QScrollArea()

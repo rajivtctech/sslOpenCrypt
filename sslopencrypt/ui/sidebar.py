@@ -23,6 +23,7 @@ MODULE_LIST = [
     ("gpg",        "🔐", "GnuPG / OpenPGP"),
     ("vault",      "🔒", "Key Vault"),
     ("india_dsc",  "🇮🇳", "India DSC & eSign"),
+    ("integrations", "🔗", "Integrations"),
 ]
 
 
