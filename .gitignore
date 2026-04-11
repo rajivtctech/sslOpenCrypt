@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp / secure
+*.key
+*.pem
+*.p12
+*.pfx
+*.enc
+*.sig
+*.p7s
+audit_log.json
+
+# AppImage build artifacts
+*.AppImage
+AppDir/

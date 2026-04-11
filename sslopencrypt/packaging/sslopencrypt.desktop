@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=sslOpenCrypt
+GenericName=OpenSSL GUI
+Comment=Open-source GUI for OpenSSL, GnuPG, PKI & Encryption
+Exec=python3 /opt/sslopencrypt/main.py
+Icon=sslopencrypt
+Terminal=false
+Categories=Utility;Security;Education;
+Keywords=openssl;cryptography;pki;gpg;encryption;certificate;signing;
+StartupWMClass=sslopencrypt
+MimeType=application/x-pem-file;application/x-pkcs12;application/pkix-cert;

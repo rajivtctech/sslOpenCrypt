@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "sslopencrypt"
+version = "1.0.0"
+description = "Open-source GUI for OpenSSL, GnuPG, PKI & Encryption"
+readme = "../README.md"
+license = { text = "GPL-3.0-or-later" }
+authors = [
+    { name = "tctech.co.in" }
+]
+keywords = ["openssl", "cryptography", "pki", "gpg", "encryption", "gui", "pyqt6"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Education",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.4.0",
+    "cryptography>=41.0.0",
+    "argon2-cffi>=21.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-qt>=4.0.0",
+]
+
+[project.scripts]
+sslopencrypt = "main:main"
+
+[project.gui-scripts]
+sslopencrypt-gui = "main:main"
+
+[project.urls]
+Homepage = "https://tctech.co.in"
+Repository = "https://github.com/tctech-co-in/sslopencrypt"
+"Bug Tracker" = "https://github.com/tctech-co-in/sslopencrypt/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "modules*", "ui*", "cli*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.txt", "*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # line length handled by formatter
