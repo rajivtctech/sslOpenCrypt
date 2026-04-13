@@ -133,7 +133,8 @@ def generate_key(
     elif alg_upper.startswith("DSA"):
         bits = int(alg_upper.split("-")[1])
         with secure_temp_file(suffix=".pem", prefix="dsaparam_") as param_file:
-            r_param = run_openssl(["dsaparam", "-genkey", str(bits), "-out", param_file.path])
+            # OpenSSL 3.x: numbits must be the final positional argument
+            r_param = run_openssl(["dsaparam", "-genkey", "-out", param_file.path, str(bits)])
             if not r_param.success:
                 return r_param
             cmd2 = ["pkcs8", "-topk8", "-in", param_file.path]
@@ -227,8 +228,13 @@ def _parse_key_text(text: str) -> dict:
         parsed["key_type"] = "Ed448"
     elif "X25519" in text.upper():
         parsed["key_type"] = "X25519"
+    elif "X448" in text.upper():
+        parsed["key_type"] = "X448"
     elif "DSA Private Key" in text:
         parsed["key_type"] = "DSA"
+    # Ensure algorithm mirrors key_type for all types that don't set it explicitly
+    if "key_type" in parsed and "algorithm" not in parsed:
+        parsed["algorithm"] = parsed["key_type"]
     return parsed
 
 

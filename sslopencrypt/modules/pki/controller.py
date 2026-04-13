@@ -240,7 +240,9 @@ def create_pkcs12(
     if key_passphrase:
         cmd += ["-passin", f"pass:{key_passphrase}"]
     if ca_bundle:
-        cmd += ["-certfile", ca_bundle, "-chain"]
+        # Include CA cert(s) directly — do not use -chain which requires the CA
+        # to be in the system trust store (fails for custom/test CAs).
+        cmd += ["-certfile", ca_bundle]
     r = run_openssl(cmd)
     log_operation("pki", "create_pkcs12", r.command_str, r.success)
     return r
