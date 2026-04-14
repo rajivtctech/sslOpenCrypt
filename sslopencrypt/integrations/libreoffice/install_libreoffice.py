@@ -30,15 +30,18 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR    = Path(__file__).resolve().parent
 MACRO_LIB_SRC = SCRIPT_DIR / "macro_library"
-LIBRARY_NAME = "sslOpenCrypt"
+OXT_SRC       = SCRIPT_DIR / "oxt"          # Addons.xcu + META-INF/manifest.xml
+OXT_NAME      = "sslopencrypt-toolbar.oxt"
+LIBRARY_NAME  = "sslOpenCrypt"
 
 SHORTCUTS = [
     ("Ctrl+Alt+S", "SignDocument"),
@@ -254,6 +257,59 @@ def _remove_window_state(profile: Path):
 
 
 # ---------------------------------------------------------------------------
+# OXT extension helpers  (proper toolbar installation via unopkg)
+# ---------------------------------------------------------------------------
+
+def find_unopkg() -> str | None:
+    """Return the path to the unopkg binary."""
+    u = shutil.which("unopkg")
+    if u:
+        return u
+    for p in ["/usr/bin/unopkg", "/usr/lib/libreoffice/program/unopkg"]:
+        if Path(p).exists():
+            return p
+    return None
+
+
+def _build_oxt(dest_path: Path):
+    """Build sslopencrypt-toolbar.oxt (ZIP) from the oxt/ source tree."""
+    with zipfile.ZipFile(dest_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for f in OXT_SRC.rglob("*"):
+            if f.is_file():
+                z.write(f, f.relative_to(OXT_SRC))
+    print(f"  Built: {dest_path}")
+
+
+def _install_oxt(unopkg: str, oxt_path: Path) -> int:
+    """Install the .oxt extension for the current user."""
+    result = subprocess.run(
+        [unopkg, "add", "--force", str(oxt_path)],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print("  Extension installed via unopkg.")
+    else:
+        print(f"  WARNING: unopkg exited {result.returncode}")
+        if result.stderr.strip():
+            print(f"  {result.stderr.strip()}")
+    return result.returncode
+
+
+def _remove_oxt(unopkg: str) -> int:
+    """Remove the .oxt extension."""
+    result = subprocess.run(
+        [unopkg, "remove", "sslopencrypt-toolbar.oxt"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print("  Extension removed via unopkg.")
+    else:
+        # Not installed is not an error
+        print("  Extension not present (nothing to remove).")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
 
@@ -279,15 +335,33 @@ def install(profile: Path, soffice: str) -> int:
             shutil.copy2(src_file, dst_file)
             print(f"  Copied: {dst_file.name}")
 
-    # 2. Write toolbar XML files.
-    #    sslopencrypt.xml in each module's toolbar/ dir defines the buttons.
-    #    The WindowStateType entries that make it appear in View → Toolbars are
-    #    written in Step 4, AFTER the headless soffice run — because soffice
-    #    reads registrymodifications.xcu into memory on startup and rewrites the
-    #    entire file on exit, which would overwrite anything we add before it runs.
+    # 2. Install the toolbar as a proper LibreOffice extension (.oxt).
+    #
+    #    Previous approaches (writing toolbar XML + registrymodifications.xcu
+    #    entries directly) failed because:
+    #    a) LO reads registrymodifications.xcu into memory and rewrites it on
+    #       exit — any entries we add before LO runs get overwritten.
+    #    b) The <item><prop> format only modifies EXISTING WindowStateType nodes;
+    #       without a node in the compiled XCD schema, LO discards our entries
+    #       as orphans when it rewrites the file.
+    #
+    #    The correct mechanism: AddonUI/OfficeToolBar in Addons.xcu installed
+    #    via unopkg.  This is how every extension toolbar works.  LO handles
+    #    all registration, persistence, and View→Toolbars surfacing itself.
     print()
-    print("Step 2/4 — Installing toolbar XML (Writer / Calc / Impress / Draw)…")
-    _install_toolbar_xml(profile)
+    print("Step 2/4 — Installing toolbar extension (unopkg)…")
+    unopkg = find_unopkg()
+    if unopkg and OXT_SRC.is_dir():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oxt_path = Path(tmpdir) / OXT_NAME
+            _build_oxt(oxt_path)
+            _install_oxt(unopkg, oxt_path)
+    else:
+        if not unopkg:
+            print("  WARNING: unopkg not found — toolbar extension not installed.")
+            print("  Install LibreOffice and re-run this installer.")
+        else:
+            print(f"  WARNING: oxt/ source not found at {OXT_SRC}")
 
     # 3. Register library in the LO user profile (registrymodifications.xcu)
     #    LibreOffice auto-discovers libraries in Scripts/basic/ — no XCU edit needed.
@@ -335,16 +409,9 @@ def install(profile: Path, soffice: str) -> int:
         print(f"  ERROR: soffice not found at {soffice}")
         return 1
 
-    # 4. Register toolbar in window state + verify shortcuts.
-    #    Written HERE, after soffice has exited and flushed its copy of
-    #    registrymodifications.xcu.  Writing before soffice runs would be
-    #    silently wiped out when LO rewrites the file on exit.
+    # 4. Verify shortcut registration.
     print()
-    print("Step 4/4 — Registering toolbar in View → Toolbars menu…")
-    _install_window_state(profile)
-
-    print()
-    print("Step 4b/4 — Verifying shortcut registration…")
+    print("Step 4/4 — Verifying shortcut registration…")
     if marker.exists():
         content = marker.read_text().strip()
         if content.startswith("ERROR"):
@@ -392,13 +459,12 @@ def remove(profile: Path) -> int:
     else:
         print(f"  Macro library not present at {dest}")
 
-    # Remove toolbar XML files from all modules
-    _remove_toolbar_xml(profile)
-    print("  Removed toolbar XML from Writer / Calc / Impress / Draw")
-
-    # Remove window state entries so toolbar disappears from View → Toolbars
-    _remove_window_state(profile)
-    print("  Removed window state entries from registrymodifications.xcu")
+    # Remove toolbar extension
+    unopkg = find_unopkg()
+    if unopkg:
+        _remove_oxt(unopkg)
+    else:
+        print("  WARNING: unopkg not found — remove toolbar manually via LO Extensions manager.")
 
     print()
     print("Note: keyboard shortcuts registered with GlobalAcceleratorConfiguration")

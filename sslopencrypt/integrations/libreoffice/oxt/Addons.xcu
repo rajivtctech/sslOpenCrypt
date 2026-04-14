@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Addons.xcu — sslOpenCrypt LibreOffice toolbar extension.
+
+  Registers the sslOpenCrypt toolbar via AddonUI/OfficeToolBar, which is the
+  standard LO extension mechanism for custom toolbars.  The toolbar appears in
+  View → Toolbars → sslOpenCrypt in Writer, Calc, Impress, and Draw.
+-->
+<oor:component-data
+    xmlns:oor="http://openoffice.org/2001/registry"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    oor:name="Addons"
+    oor:package="org.openoffice.Office">
+
+  <node oor:name="AddonUI">
+
+    <!-- ── Toolbar (View → Toolbars → sslOpenCrypt) ── -->
+    <node oor:name="OfficeToolBar">
+      <node oor:name="com.tctech.sslopencrypt.toolbar" oor:op="replace">
+
+        <prop oor:name="Title" oor:type="xs:string">
+          <value xml:lang="en-US">sslOpenCrypt</value>
+        </prop>
+
+        <node oor:name="m001" oor:op="replace">
+          <prop oor:name="URL"    oor:type="xs:string"><value>macro:///sslOpenCrypt.Module1.SignDocument</value></prop>
+          <prop oor:name="Title"  oor:type="xs:string"><value xml:lang="en-US">Sign  (Ctrl+Alt+S)</value></prop>
+          <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
+          <prop oor:name="Context" oor:type="xs:string">
+            <value>com.sun.star.text.TextDocument,com.sun.star.sheet.SpreadsheetDocument,com.sun.star.presentation.PresentationDocument,com.sun.star.drawing.DrawingDocument</value>
+          </prop>
+        </node>
+
+        <node oor:name="m002" oor:op="replace">
+          <prop oor:name="URL"    oor:type="xs:string"><value>macro:///sslOpenCrypt.Module1.EncryptDocument</value></prop>
+          <prop oor:name="Title"  oor:type="xs:string"><value xml:lang="en-US">Encrypt  (Ctrl+Alt+E)</value></prop>
+          <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
+          <prop oor:name="Context" oor:type="xs:string">
+            <value>com.sun.star.text.TextDocument,com.sun.star.sheet.SpreadsheetDocument,com.sun.star.presentation.PresentationDocument,com.sun.star.drawing.DrawingDocument</value>
+          </prop>
+        </node>
+
+        <node oor:name="m003" oor:op="replace">
+          <prop oor:name="URL"    oor:type="xs:string"><value>macro:///sslOpenCrypt.Module1.HashDocument</value></prop>
+          <prop oor:name="Title"  oor:type="xs:string"><value xml:lang="en-US">Hash  (Ctrl+Alt+H)</value></prop>
+          <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
+          <prop oor:name="Context" oor:type="xs:string">
+            <value>com.sun.star.text.TextDocument,com.sun.star.sheet.SpreadsheetDocument,com.sun.star.presentation.PresentationDocument,com.sun.star.drawing.DrawingDocument</value>
+          </prop>
+        </node>
+
+        <node oor:name="m004" oor:op="replace">
+          <prop oor:name="URL"    oor:type="xs:string"><value>macro:///sslOpenCrypt.Module1.VerifySignature</value></prop>
+          <prop oor:name="Title"  oor:type="xs:string"><value xml:lang="en-US">Verify  (Ctrl+Alt+V)</value></prop>
+          <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
+          <prop oor:name="Context" oor:type="xs:string">
+            <value>com.sun.star.text.TextDocument,com.sun.star.sheet.SpreadsheetDocument,com.sun.star.presentation.PresentationDocument,com.sun.star.drawing.DrawingDocument</value>
+          </prop>
+        </node>
+
+      </node>
+    </node><!-- OfficeToolBar -->
+
+    <!-- ── Tools menu entry (Tools → Add-Ons → sslOpenCrypt) ── -->
+    <node oor:name="AddonMenu">
+      <node oor:name="com.tctech.sslopencrypt.menu" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string">
+          <value xml:lang="en-US">sslOpenCrypt</value>
+        </prop>
+        <node oor:name="Submenu">
+          <node oor:name="s001" oor:op="replace">
+            <prop oor:name="URL"    oor:type="xs:string"><value>macro:///sslOpenCrypt.Module1.SignDocument</value></prop>
+            <prop oor:name="Title"  oor:type="xs:string"><value xml:lang="en-US">Sign Document…</value></prop>
+            <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
+          </node>
+          <node oor:name="s002" oor:op="replace">
+            <prop oor:name="URL"    oor:type="xs:string"><value>macro:///sslOpenCrypt.Module1.EncryptDocument</value></prop>
+            <prop oor:name="Title"  oor:type="xs:string"><value xml:lang="en-US">Encrypt Document…</value></prop>
+            <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
+          </node>
+          <node oor:name="s003" oor:op="replace">
+            <prop oor:name="URL"    oor:type="xs:string"><value>macro:///sslOpenCrypt.Module1.HashDocument</value></prop>
+            <prop oor:name="Title"  oor:type="xs:string"><value xml:lang="en-US">Hash Document…</value></prop>
+            <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
+          </node>
+          <node oor:name="s004" oor:op="replace">
+            <prop oor:name="URL"    oor:type="xs:string"><value>macro:///sslOpenCrypt.Module1.VerifySignature</value></prop>
+            <prop oor:name="Title"  oor:type="xs:string"><value xml:lang="en-US">Verify Signature…</value></prop>
+            <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
+          </node>
+        </node>
+      </node>
+    </node><!-- AddonMenu -->
+
+  </node><!-- AddonUI -->
+</oor:component-data>
