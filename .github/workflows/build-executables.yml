@@ -9,6 +9,11 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# Opt into Node.js 24 now to silence the Node.js 20 deprecation warnings
+# from actions/checkout, actions/setup-python, actions/cache.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     strategy:
@@ -19,15 +24,12 @@ jobs:
             asset_name: sslOpenCrypt-Linux
             platform_label: Linux (x86_64)
 
-          # macOS 13 = Intel x86_64 — also runs via Rosetta 2 on Apple Silicon
-          - os: macos-13
-            asset_name: sslOpenCrypt-macOS-Intel
-            platform_label: macOS Intel (x86_64)
-
-          # macOS 14 = Apple Silicon arm64
+          # macos-13 (Intel x86_64) has been retired by GitHub — using macos-14
+          # (Apple Silicon arm64) as the sole macOS target. Intel Mac users can
+          # run this via Rosetta 2.
           - os: macos-14
-            asset_name: sslOpenCrypt-macOS-AppleSilicon
-            platform_label: macOS Apple Silicon (arm64)
+            asset_name: sslOpenCrypt-macOS
+            platform_label: macOS (arm64 / Apple Silicon)
 
           - os: windows-latest
             asset_name: sslOpenCrypt-Windows.exe
@@ -102,13 +104,22 @@ jobs:
           --workpath build/
           --noconfirm
 
-      # Confirm the binary was actually produced and report its size
-      - name: Verify build output (Linux / macOS)
+      # The spec names the binary sslOpenCrypt-Linux / sslOpenCrypt-macOS /
+      # sslOpenCrypt-Windows based on sys.platform. Rename to the matrix
+      # asset_name so the upload step always finds the right file.
+      - name: Rename binary to asset name (Linux / macOS)
         if: runner.os != 'Windows'
         working-directory: sslopencrypt/dist
         run: |
           ls -lh
-          test -f "${{ matrix.asset_name }}" || (echo "ERROR: expected binary not found" && exit 1)
+          # Find the binary produced (any executable file), rename if needed
+          BUILT=$(find . -maxdepth 1 -type f -not -name "*.pkg" | head -1 | sed 's|^\./||')
+          echo "Built file: $BUILT"
+          if [ "$BUILT" != "${{ matrix.asset_name }}" ]; then
+            mv "$BUILT" "${{ matrix.asset_name }}"
+            echo "Renamed $BUILT → ${{ matrix.asset_name }}"
+          fi
+          ls -lh
           echo "Binary size: $(du -sh ${{ matrix.asset_name }} | cut -f1)"
 
       - name: Verify build output (Windows)
@@ -148,9 +159,8 @@ jobs:
 
       - name: Make Linux / macOS executables runnable
         run: |
-          chmod +x artifacts/sslOpenCrypt-Linux               || true
-          chmod +x artifacts/sslOpenCrypt-macOS-Intel         || true
-          chmod +x artifacts/sslOpenCrypt-macOS-AppleSilicon  || true
+          chmod +x artifacts/sslOpenCrypt-Linux  || true
+          chmod +x artifacts/sslOpenCrypt-macOS  || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -164,8 +174,7 @@ jobs:
             | Platform | File | Notes |
             |---|---|---|
             | Linux x86_64 | `sslOpenCrypt-Linux` | Ubuntu 22.04+, Debian 12+, Fedora 38+ |
-            | macOS Intel | `sslOpenCrypt-macOS-Intel` | macOS 13+ (x86_64; runs via Rosetta 2 on Apple Silicon) |
-            | macOS Apple Silicon | `sslOpenCrypt-macOS-AppleSilicon` | macOS 14+ (arm64 native) |
+            | macOS (Apple Silicon) | `sslOpenCrypt-macOS` | macOS 14+ native arm64; also runs on Intel Mac via Rosetta 2 |
             | Windows x86_64 | `sslOpenCrypt-Windows.exe` | Windows 10 / 11 |
 
             ### First run
@@ -178,9 +187,9 @@ jobs:
 
             **macOS:**
             ```bash
-            chmod +x sslOpenCrypt-macOS-Intel   # or AppleSilicon
+            chmod +x sslOpenCrypt-macOS
             # First run: right-click → Open (to bypass Gatekeeper on unsigned binary)
-            ./sslOpenCrypt-macOS-Intel
+            ./sslOpenCrypt-macOS
             ```
 
             **Windows:** Double-click `sslOpenCrypt-Windows.exe`. Windows SmartScreen may warn on first run — click **More info → Run anyway**.
@@ -191,15 +200,14 @@ jobs:
 
             | OS | Install |
             |---|---|
-            | Ubuntu/Debian | `sudo apt install openssl gnupg` |
+            | Ubuntu / Debian | `sudo apt install openssl gnupg` |
             | macOS | `brew install openssl gnupg` |
             | Windows | [Win64 OpenSSL](https://slproweb.com/products/Win32OpenSSL.html) + [Gpg4win](https://gpg4win.org) |
 
             > **India DSC note:** On-token PKCS#11 signing and PAdES PDF signing require the vendor USB token driver (libcastle.so / libeToken.so on Linux, equivalent on macOS/Windows). These are not bundled and must be installed separately from the token manufacturer.
           files: |
             artifacts/sslOpenCrypt-Linux
-            artifacts/sslOpenCrypt-macOS-Intel
-            artifacts/sslOpenCrypt-macOS-AppleSilicon
+            artifacts/sslOpenCrypt-macOS
             artifacts/sslOpenCrypt-Windows.exe
           generate_release_notes: true
           draft: false
