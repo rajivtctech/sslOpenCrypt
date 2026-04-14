@@ -196,7 +196,8 @@ class IPCServer:
         self._sock.bind((self.host, self.port))
         self._sock.listen(5)
         self._running = True
-        print(f"{_BANNER}\nPort: {self.port}  (loopback only — not network-accessible)")
+        print(f"{_BANNER}\nPort: {self.port}  (loopback only — not network-accessible)",
+              flush=True)
         while self._running:
             try:
                 conn, addr = self._sock.accept()

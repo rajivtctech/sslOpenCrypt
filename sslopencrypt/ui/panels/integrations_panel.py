@@ -374,14 +374,22 @@ class IntegrationsPanel(BasePanel):
     def _ipc_start(self):
         if self._ipc_process and self._ipc_process.state() == QProcess.ProcessState.Running:
             return
+        if not _LO_IPC_SERVER.exists():
+            self._lo_log.append(f"⚠️  IPC server script not found:\n    {_LO_IPC_SERVER}")
+            return
         self._ipc_process = QProcess(self)
         self._ipc_process.setProgram(sys.executable)
-        self._ipc_process.setArguments([str(_LO_IPC_SERVER)])
+        # -u: unbuffered stdout/stderr so the "listening" banner arrives
+        # immediately when the socket is bound, not when the process exits.
+        self._ipc_process.setArguments(["-u", str(_LO_IPC_SERVER)])
         self._ipc_process.readyReadStandardOutput.connect(self._ipc_on_stdout)
         self._ipc_process.readyReadStandardError.connect(self._ipc_on_stderr)
-        self._ipc_process.started.connect(self._refresh_ipc_status)
-        self._ipc_process.finished.connect(self._refresh_ipc_status)
+        # Do NOT refresh on 'started' — the port is not bound yet at that point.
+        # Status is refreshed from _ipc_on_stdout once the banner arrives.
+        self._ipc_process.finished.connect(self._ipc_on_finished)
         self._ipc_process.start()
+        self._ipc_start_btn.setEnabled(False)
+        self._ipc_start_btn.setText("Starting…")
         self._lo_log.append("▶  IPC server starting…")
 
     def _ipc_stop(self):
@@ -392,15 +400,32 @@ class IntegrationsPanel(BasePanel):
             self._lo_log.append("■  IPC server stopped.")
         self._refresh_ipc_status()
 
+    def _ipc_on_finished(self):
+        """Called when the IPC server process exits unexpectedly or after stop."""
+        self._ipc_start_btn.setText("Start IPC Server")
+        self._refresh_ipc_status()
+        rc = self._ipc_process.exitCode() if self._ipc_process else 0
+        if rc != 0:
+            self._lo_log.append(f"⚠️  IPC server exited with code {rc}.")
+
     def _ipc_on_stdout(self):
         if self._ipc_process:
             data = bytes(self._ipc_process.readAllStandardOutput()).decode(errors="replace")
-            self._lo_log.append(data.strip())
+            text = data.strip()
+            if text:
+                self._lo_log.append(text)
+            # The banner is printed right after the socket is bound — use it
+            # as the signal that the server is now ready to accept connections.
+            self._ipc_start_btn.setText("Start IPC Server")
+            self._refresh_ipc_status()
 
     def _ipc_on_stderr(self):
         if self._ipc_process:
             data = bytes(self._ipc_process.readAllStandardError()).decode(errors="replace")
-            self._lo_log.append(data.strip())
+            text = data.strip()
+            if text:
+                self._lo_log.append(text)
+            self._refresh_ipc_status()
 
     # ------------------------------------------------------------------
     # Dolphin install / uninstall
