@@ -47,6 +47,50 @@ SHORTCUTS = [
     ("Ctrl+Alt+V", "VerifySignature"),
 ]
 
+# ---------------------------------------------------------------------------
+# Toolbar XML templates (written directly to the user profile — more reliable
+# than the headless macro UNO API, which often silently fails to flush)
+# ---------------------------------------------------------------------------
+
+# LO module IDs → human-readable names
+_TB_MODULES = [
+    ("swriter",  "Writer"),
+    ("scalc",    "Calc"),
+    ("simpress", "Impress"),
+    ("sdraw",    "Draw"),
+]
+
+_TOOLBAR_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE toolbar:toolbar PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "toolbar.dtd">
+<toolbar:toolbar xmlns:toolbar="http://openoffice.org/2001/toolbar"
+                 xmlns:xlink="http://www.w3.org/1999/xlink"
+                 toolbar:id="toolbar"
+                 toolbar:uiname="sslOpenCrypt">
+ <toolbar:toolbaritem xlink:href="macro:///sslOpenCrypt.Module1.SignDocument"
+                      toolbar:visible="true"/>
+ <toolbar:toolbaritem xlink:href="macro:///sslOpenCrypt.Module1.EncryptDocument"
+                      toolbar:visible="true"/>
+ <toolbar:toolbaritem xlink:href="macro:///sslOpenCrypt.Module1.HashDocument"
+                      toolbar:visible="true"/>
+ <toolbar:toolbaritem xlink:href="macro:///sslOpenCrypt.Module1.VerifySignature"
+                      toolbar:visible="true"/>
+</toolbar:toolbar>
+"""
+
+_MANIFEST_ENTRY = (
+    ' <manifest:file-entry manifest:media-type="application/vnd.sun.star.toolbar"'
+    ' manifest:full-path="toolbar/sslopencrypt.xml"/>'
+)
+
+_MANIFEST_TEMPLATE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE manifest:manifest PUBLIC "-//OpenOffice.org//DTD Manifest 1.0//EN" "Manifest.dtd">
+<manifest:manifest xmlns:manifest="http://openoffice.org/2001/manifest">
+{entry}
+</manifest:manifest>
+"""
+
 
 def find_lo_profile() -> Path | None:
     """Return the LibreOffice user profile directory, or None if not found."""
@@ -94,6 +138,61 @@ def macro_dest(profile: Path) -> Path:
     return profile / "Scripts" / "basic" / LIBRARY_NAME
 
 
+def _cfg_base(profile: Path) -> Path:
+    return profile / "config" / "soffice.cfg" / "modules"
+
+
+# ---------------------------------------------------------------------------
+# Toolbar XML helpers
+# ---------------------------------------------------------------------------
+
+def _install_toolbar_xml(profile: Path):
+    """Write sslopencrypt.xml into each module's toolbar directory and update
+    (or create) the per-module manifest.xml so LO discovers the toolbar on
+    the next startup.  This is more reliable than the headless UNO API."""
+    base = _cfg_base(profile)
+    ok = []
+    for module_id, module_name in _TB_MODULES:
+        tb_dir = base / module_id / "toolbar"
+        tb_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write toolbar definition
+        (tb_dir / "sslopencrypt.xml").write_text(_TOOLBAR_XML, encoding="utf-8")
+
+        # Update or create manifest.xml for this module
+        mf = base / module_id / "manifest.xml"
+        if mf.exists():
+            content = mf.read_text(encoding="utf-8")
+            if "sslopencrypt.xml" not in content:
+                content = content.replace(
+                    "</manifest:manifest>",
+                    f"{_MANIFEST_ENTRY}\n</manifest:manifest>",
+                )
+                mf.write_text(content, encoding="utf-8")
+        else:
+            mf.write_text(
+                _MANIFEST_TEMPLATE.format(entry=_MANIFEST_ENTRY),
+                encoding="utf-8",
+            )
+        ok.append(module_name)
+
+    print(f"  Toolbar written for: {', '.join(ok)}")
+
+
+def _remove_toolbar_xml(profile: Path):
+    """Remove sslopencrypt.xml and its manifest entry from every module."""
+    base = _cfg_base(profile)
+    for module_id, _ in _TB_MODULES:
+        tb_file = base / module_id / "toolbar" / "sslopencrypt.xml"
+        tb_file.unlink(missing_ok=True)
+
+        mf = base / module_id / "manifest.xml"
+        if mf.exists():
+            lines = mf.read_text(encoding="utf-8").splitlines(keepends=True)
+            cleaned = [l for l in lines if "sslopencrypt.xml" not in l]
+            mf.write_text("".join(cleaned), encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
@@ -106,7 +205,7 @@ def install(profile: Path, soffice: str) -> int:
     print()
 
     # 1. Copy XBA files and icons/
-    print("Step 1/3 — Copying macro library files…")
+    print("Step 1/4 — Copying macro library files…")
     dest.mkdir(parents=True, exist_ok=True)
     for src_file in MACRO_LIB_SRC.iterdir():
         dst_file = dest / src_file.name
@@ -120,10 +219,19 @@ def install(profile: Path, soffice: str) -> int:
             shutil.copy2(src_file, dst_file)
             print(f"  Copied: {dst_file.name}")
 
-    # 2. Register library in the LO user profile (registrymodifications.xcu)
+    # 2. Write toolbar XML directly into the LO user profile.
+    #    The headless UNO API (ModuleUIConfigurationManagerSupplier) is
+    #    unreliable in --headless mode and often fails to flush toolbar
+    #    settings.  Writing the XML files directly is how LO extension
+    #    installers work and is guaranteed to be picked up on next startup.
+    print()
+    print("Step 2/4 — Installing toolbar (Writer / Calc / Impress / Draw)…")
+    _install_toolbar_xml(profile)
+
+    # 3. Register library in the LO user profile (registrymodifications.xcu)
     #    LibreOffice auto-discovers libraries in Scripts/basic/ — no XCU edit needed.
     print()
-    print("Step 2/3 — Registering keyboard shortcuts via headless LibreOffice…")
+    print("Step 3/4 — Registering keyboard shortcuts via headless LibreOffice…")
 
     # Remove any stale marker file
     xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
@@ -166,9 +274,9 @@ def install(profile: Path, soffice: str) -> int:
         print(f"  ERROR: soffice not found at {soffice}")
         return 1
 
-    # 3. Check marker file
+    # 4. Check marker file
     print()
-    print("Step 3/3 — Verifying shortcut registration…")
+    print("Step 4/4 — Verifying shortcut registration…")
     if marker.exists():
         content = marker.read_text().strip()
         if content.startswith("ERROR"):
@@ -193,7 +301,8 @@ def install(profile: Path, soffice: str) -> int:
     for shortcut, macro in SHORTCUTS:
         print(f"    {shortcut}  →  {macro}")
     print()
-    print("Toolbar: View → Toolbars → sslOpenCrypt (Writer / Calc / Impress / Draw)")
+    print("Toolbar: restart LibreOffice, then use")
+    print("  View → Toolbars → sslOpenCrypt  (Writer / Calc / Impress / Draw)")
     print()
     print("The IPC server must be running for shortcuts to work:")
     print(f"    python3 {SCRIPT_DIR}/ipc_server.py &")
@@ -207,12 +316,17 @@ def install(profile: Path, soffice: str) -> int:
 # ---------------------------------------------------------------------------
 
 def remove(profile: Path) -> int:
+    # Remove macro library
     dest = macro_dest(profile)
     if dest.exists():
         shutil.rmtree(dest)
-        print(f"  Removed: {dest}")
+        print(f"  Removed macro library: {dest}")
     else:
-        print(f"  Nothing to remove (not installed at {dest})")
+        print(f"  Macro library not present at {dest}")
+
+    # Remove toolbar XML files from all modules
+    _remove_toolbar_xml(profile)
+    print("  Removed toolbar entries from Writer / Calc / Impress / Draw")
 
     print()
     print("Note: keyboard shortcuts registered with GlobalAcceleratorConfiguration")

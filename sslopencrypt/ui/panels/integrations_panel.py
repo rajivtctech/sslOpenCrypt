@@ -119,7 +119,8 @@ class IntegrationsPanel(BasePanel):
             "   Ctrl+Alt+S  Sign    •  Ctrl+Alt+E  Encrypt\n"
             "   Ctrl+Alt+H  Hash   •  Ctrl+Alt+V  Verify\n\n"
             "Also creates an sslOpenCrypt toolbar with icon buttons.\n"
-            "Enable it via  View → Toolbars → sslOpenCrypt."
+            "Restart LibreOffice after installing, then enable via:\n"
+            "   View → Toolbars → sslOpenCrypt"
         )
         info.setStyleSheet("color: #9CA3AF; font-size: 10pt;")
         info.setWordWrap(True)
