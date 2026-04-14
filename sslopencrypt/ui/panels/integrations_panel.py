@@ -23,6 +23,9 @@ from PyQt6.QtWidgets import (
 
 from .base_panel import BasePanel
 
+# Sentinel used when a command path does not exist on disk
+_CMD_NOT_FOUND = object()
+
 # ---------------------------------------------------------------------------
 # Paths — resolved relative to this file's location
 # ---------------------------------------------------------------------------
@@ -69,6 +72,9 @@ class IntegrationsPanel(BasePanel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._ipc_process: QProcess | None = None
+        # Keeps strong Python refs to (thread, worker) pairs so the GC
+        # does not collect worker objects before their done signal fires.
+        self._active_jobs: list[tuple[QThread, _RunWorker]] = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -318,18 +324,26 @@ class IntegrationsPanel(BasePanel):
         self._lo_log.clear()
         self._lo_log.append("Running LibreOffice installer…\n")
         self._lo_install_btn.setEnabled(False)
+        self._lo_install_btn.setText("Installing…")
+        if not _LO_INSTALLER.exists():
+            self._lo_log.append(f"⚠️  Installer not found:\n    {_LO_INSTALLER}")
+            self._lo_install_btn.setEnabled(True)
+            self._lo_install_btn.setText("Install LibreOffice Integration")
+            return
         self._run_cmd(
             [sys.executable, str(_LO_INSTALLER)],
             on_done=self._lo_install_done,
         )
 
     def _lo_install_done(self, rc: int, out: str):
-        self._lo_log.append(out)
+        if out:
+            self._lo_log.append(out)
         if rc == 0:
             self._lo_log.append("\n✅  Installation complete.")
         else:
             self._lo_log.append(f"\n⚠️  Installer exited with code {rc}.")
         self._lo_install_btn.setEnabled(True)
+        self._lo_install_btn.setText("Install LibreOffice Integration")
         self._refresh_lo_status()
 
     def _lo_uninstall(self):
@@ -337,12 +351,14 @@ class IntegrationsPanel(BasePanel):
         self._lo_log.append("Removing LibreOffice macro library…\n")
         self._run_cmd(
             [sys.executable, str(_LO_INSTALLER), "--remove"],
-            on_done=lambda rc, out: (
-                self._lo_log.append(out),
-                self._lo_log.append("\n✅  Uninstalled." if rc == 0 else f"\n⚠️  Exit {rc}."),
-                self._refresh_lo_status(),
-            ),
+            on_done=self._lo_uninstall_done,
         )
+
+    def _lo_uninstall_done(self, rc: int, out: str):
+        if out:
+            self._lo_log.append(out)
+        self._lo_log.append("\n✅  Uninstalled." if rc == 0 else f"\n⚠️  Exit {rc}.")
+        self._refresh_lo_status()
 
     # ------------------------------------------------------------------
     # IPC server start / stop
@@ -394,15 +410,23 @@ class IntegrationsPanel(BasePanel):
         self._dolphin_log.clear()
         self._dolphin_log.append("Running Dolphin installer…\n")
         self._dolphin_install_btn.setEnabled(False)
+        self._dolphin_install_btn.setText("Installing…")
+        if not _DOLPHIN_INSTALLER.exists():
+            self._dolphin_log.append(f"⚠️  Installer not found:\n    {_DOLPHIN_INSTALLER}")
+            self._dolphin_install_btn.setEnabled(True)
+            self._dolphin_install_btn.setText("Install Dolphin Integration")
+            return
         self._run_cmd(
             ["bash", str(_DOLPHIN_INSTALLER)],
             on_done=self._dolphin_install_done,
         )
 
     def _dolphin_install_done(self, rc: int, out: str):
-        self._dolphin_log.append(out)
+        if out:
+            self._dolphin_log.append(out)
         self._dolphin_log.append("\n✅  Done." if rc == 0 else f"\n⚠️  Exit {rc}.")
         self._dolphin_install_btn.setEnabled(True)
+        self._dolphin_install_btn.setText("Install Dolphin Integration")
         self._refresh_dolphin_status()
 
     def _dolphin_uninstall(self):
@@ -410,11 +434,14 @@ class IntegrationsPanel(BasePanel):
         self._dolphin_log.append("Removing Dolphin service menu…\n")
         self._run_cmd(
             ["bash", str(_DOLPHIN_INSTALLER), "--remove"],
-            on_done=lambda rc, out: (
-                self._dolphin_log.append(out + ("\n✅  Done." if rc == 0 else f"\n⚠️  Exit {rc}.")),
-                self._refresh_dolphin_status(),
-            ),
+            on_done=self._dolphin_uninstall_done,
         )
+
+    def _dolphin_uninstall_done(self, rc: int, out: str):
+        if out:
+            self._dolphin_log.append(out)
+        self._dolphin_log.append("\n✅  Done." if rc == 0 else f"\n⚠️  Exit {rc}.")
+        self._refresh_dolphin_status()
 
     # ------------------------------------------------------------------
     # Nautilus install / uninstall
@@ -424,15 +451,23 @@ class IntegrationsPanel(BasePanel):
         self._nautilus_log.clear()
         self._nautilus_log.append("Installing Nautilus extension…\n")
         self._nautilus_install_btn.setEnabled(False)
+        self._nautilus_install_btn.setText("Installing…")
+        if not _NAUTILUS_INST_SH.exists():
+            self._nautilus_log.append(f"⚠️  Installer not found:\n    {_NAUTILUS_INST_SH}")
+            self._nautilus_install_btn.setEnabled(True)
+            self._nautilus_install_btn.setText("Install Nautilus Extension")
+            return
         self._run_cmd(
             ["bash", str(_NAUTILUS_INST_SH)],
             on_done=self._nautilus_install_done,
         )
 
     def _nautilus_install_done(self, rc: int, out: str):
-        self._nautilus_log.append(out)
+        if out:
+            self._nautilus_log.append(out)
         self._nautilus_log.append("\n✅  Done." if rc == 0 else f"\n⚠️  Exit {rc}.")
         self._nautilus_install_btn.setEnabled(True)
+        self._nautilus_install_btn.setText("Install Nautilus Extension")
         self._refresh_nautilus_status()
 
     def _nautilus_uninstall(self):
@@ -440,11 +475,14 @@ class IntegrationsPanel(BasePanel):
         self._nautilus_log.append("Removing Nautilus extension…\n")
         self._run_cmd(
             ["bash", str(_NAUTILUS_INST_SH), "--remove"],
-            on_done=lambda rc, out: (
-                self._nautilus_log.append(out + ("\n✅  Done." if rc == 0 else f"\n⚠️  Exit {rc}.")),
-                self._refresh_nautilus_status(),
-            ),
+            on_done=self._nautilus_uninstall_done,
         )
+
+    def _nautilus_uninstall_done(self, rc: int, out: str):
+        if out:
+            self._nautilus_log.append(out)
+        self._nautilus_log.append("\n✅  Done." if rc == 0 else f"\n⚠️  Exit {rc}.")
+        self._refresh_nautilus_status()
 
     # ------------------------------------------------------------------
     # Generic subprocess runner (non-blocking via QThread)
@@ -454,12 +492,25 @@ class IntegrationsPanel(BasePanel):
         worker = _RunWorker(cmd)
         thread = QThread(self)
         worker.moveToThread(thread)
+
+        # Keep strong Python references to both objects.  PyQt6 only holds
+        # weak references for signal-to-bound-method connections, so without
+        # this the worker can be GC'd before its done signal ever fires.
+        job = (thread, worker)
+        self._active_jobs.append(job)
+
+        def _cleanup():
+            try:
+                self._active_jobs.remove(job)
+            except ValueError:
+                pass
+
         thread.started.connect(worker.run)
         worker.done.connect(on_done)
         worker.done.connect(thread.quit)
+        thread.finished.connect(_cleanup)
         thread.finished.connect(thread.deleteLater)
         worker.done.connect(worker.deleteLater)
-        self._current_thread = thread  # prevent GC
         thread.start()
 
     # ------------------------------------------------------------------
