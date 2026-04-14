@@ -52,13 +52,30 @@ SHORTCUTS = [
 # than the headless macro UNO API, which often silently fails to flush)
 # ---------------------------------------------------------------------------
 
-# LO module IDs → human-readable names
+# LO module IDs → (human label, WindowState schema name)
+# Schema names come from writer/calc/impress/draw.xcd compiled registries.
 _TB_MODULES = [
-    ("swriter",  "Writer"),
-    ("scalc",    "Calc"),
-    ("simpress", "Impress"),
-    ("sdraw",    "Draw"),
+    ("swriter",  "Writer",  "WriterWindowState"),
+    ("scalc",    "Calc",    "CalcWindowState"),
+    ("simpress", "Impress", "ImpressWindowState"),
+    ("sdraw",    "Draw",    "DrawWindowState"),
 ]
+
+# XCU path template for one toolbar node in a module's window state
+_XCU_PATH_TMPL = (
+    "/org.openoffice.Office.UI.{ws}/UIElements/States/"
+    "org.openoffice.Office.UI.WindowState:WindowStateType"
+    "['private:resource/toolbar/sslopencrypt']"
+)
+
+# registrymodifications.xcu skeleton — created only when it doesn't exist yet
+_XCU_SKELETON = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<oor:items xmlns:oor="http://openoffice.org/2001/registry"
+           xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+</oor:items>
+"""
 
 _TOOLBAR_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -152,7 +169,7 @@ def _install_toolbar_xml(profile: Path):
     the next startup.  This is more reliable than the headless UNO API."""
     base = _cfg_base(profile)
     ok = []
-    for module_id, module_name in _TB_MODULES:
+    for module_id, module_name, _ws in _TB_MODULES:
         tb_dir = base / module_id / "toolbar"
         tb_dir.mkdir(parents=True, exist_ok=True)
 
@@ -176,13 +193,46 @@ def _install_toolbar_xml(profile: Path):
             )
         ok.append(module_name)
 
-    print(f"  Toolbar written for: {', '.join(ok)}")
+    print(f"  Toolbar XML written for: {', '.join(ok)}")
+
+
+def _install_window_state(profile: Path):
+    """Register the toolbar in registrymodifications.xcu so it appears in
+    View → Toolbars.  LO uses WindowStateType entries to build that menu —
+    toolbar XML files alone are not enough."""
+    xcu = profile / "registrymodifications.xcu"
+    if xcu.exists():
+        content = xcu.read_text(encoding="utf-8")
+        if "sslopencrypt" in content:
+            print("  Window state already registered.")
+            return
+    else:
+        content = _XCU_SKELETON
+
+    new_items = []
+    for _module_id, module_name, ws in _TB_MODULES:
+        path = _XCU_PATH_TMPL.format(ws=ws)
+        # UIName → display label in View → Toolbars
+        new_items.append(
+            f'<item oor:path="{path}/UIName">'
+            f'<value xml:lang="en-US">sslOpenCrypt</value></item>'
+        )
+        # Visible=false — hidden by default; user enables via View → Toolbars
+        new_items.append(
+            f'<item oor:path="{path}">'
+            f'<prop oor:name="Visible" oor:op="fuse"><value>false</value></prop></item>'
+        )
+
+    block = "\n".join(new_items)
+    content = content.replace("</oor:items>", block + "\n</oor:items>")
+    xcu.write_text(content, encoding="utf-8")
+    print(f"  Window state registered for: {', '.join(m for _, m, _ in _TB_MODULES)}")
 
 
 def _remove_toolbar_xml(profile: Path):
     """Remove sslopencrypt.xml and its manifest entry from every module."""
     base = _cfg_base(profile)
-    for module_id, _ in _TB_MODULES:
+    for module_id, _name, _ws in _TB_MODULES:
         tb_file = base / module_id / "toolbar" / "sslopencrypt.xml"
         tb_file.unlink(missing_ok=True)
 
@@ -191,6 +241,16 @@ def _remove_toolbar_xml(profile: Path):
             lines = mf.read_text(encoding="utf-8").splitlines(keepends=True)
             cleaned = [l for l in lines if "sslopencrypt.xml" not in l]
             mf.write_text("".join(cleaned), encoding="utf-8")
+
+
+def _remove_window_state(profile: Path):
+    """Remove sslopencrypt WindowState entries from registrymodifications.xcu."""
+    xcu = profile / "registrymodifications.xcu"
+    if not xcu.exists():
+        return
+    lines = xcu.read_text(encoding="utf-8").splitlines(keepends=True)
+    cleaned = [l for l in lines if "sslopencrypt" not in l]
+    xcu.write_text("".join(cleaned), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -219,13 +279,14 @@ def install(profile: Path, soffice: str) -> int:
             shutil.copy2(src_file, dst_file)
             print(f"  Copied: {dst_file.name}")
 
-    # 2. Write toolbar XML directly into the LO user profile.
-    #    The headless UNO API (ModuleUIConfigurationManagerSupplier) is
-    #    unreliable in --headless mode and often fails to flush toolbar
-    #    settings.  Writing the XML files directly is how LO extension
-    #    installers work and is guaranteed to be picked up on next startup.
+    # 2. Write toolbar XML files.
+    #    sslopencrypt.xml in each module's toolbar/ dir defines the buttons.
+    #    The WindowStateType entries that make it appear in View → Toolbars are
+    #    written in Step 4, AFTER the headless soffice run — because soffice
+    #    reads registrymodifications.xcu into memory on startup and rewrites the
+    #    entire file on exit, which would overwrite anything we add before it runs.
     print()
-    print("Step 2/4 — Installing toolbar (Writer / Calc / Impress / Draw)…")
+    print("Step 2/4 — Installing toolbar XML (Writer / Calc / Impress / Draw)…")
     _install_toolbar_xml(profile)
 
     # 3. Register library in the LO user profile (registrymodifications.xcu)
@@ -274,9 +335,16 @@ def install(profile: Path, soffice: str) -> int:
         print(f"  ERROR: soffice not found at {soffice}")
         return 1
 
-    # 4. Check marker file
+    # 4. Register toolbar in window state + verify shortcuts.
+    #    Written HERE, after soffice has exited and flushed its copy of
+    #    registrymodifications.xcu.  Writing before soffice runs would be
+    #    silently wiped out when LO rewrites the file on exit.
     print()
-    print("Step 4/4 — Verifying shortcut registration…")
+    print("Step 4/4 — Registering toolbar in View → Toolbars menu…")
+    _install_window_state(profile)
+
+    print()
+    print("Step 4b/4 — Verifying shortcut registration…")
     if marker.exists():
         content = marker.read_text().strip()
         if content.startswith("ERROR"):
@@ -326,7 +394,11 @@ def remove(profile: Path) -> int:
 
     # Remove toolbar XML files from all modules
     _remove_toolbar_xml(profile)
-    print("  Removed toolbar entries from Writer / Calc / Impress / Draw")
+    print("  Removed toolbar XML from Writer / Calc / Impress / Draw")
+
+    # Remove window state entries so toolbar disappears from View → Toolbars
+    _remove_window_state(profile)
+    print("  Removed window state entries from registrymodifications.xcu")
 
     print()
     print("Note: keyboard shortcuts registered with GlobalAcceleratorConfiguration")
