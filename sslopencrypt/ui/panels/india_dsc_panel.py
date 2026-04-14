@@ -20,7 +20,10 @@ from modules.india_dsc.controller import (
     export_certificate, inspect_certificate,
     sign_file_with_token, verify_signature_india_pki,
     get_india_pki_info, detect_available_libs,
-    KNOWN_TOKEN_LIBS,
+    check_certificate_expiry, check_token_pin_health,
+    validate_for_portal, list_supported_portals,
+    sign_pdf_with_token, esign_build_request,
+    KNOWN_TOKEN_LIBS, ESIGN_ASPS, RCAI_SPL_SHA256_FINGERPRINT,
 )
 from .base_panel import BasePanel
 
@@ -49,7 +52,11 @@ class IndiaDSCPanel(BasePanel):
         tabs = QTabWidget()
         tabs.addTab(self._build_token_tab(), "Token Manager")
         tabs.addTab(self._build_sign_tab(), "Sign Document")
+        tabs.addTab(self._build_sign_pdf_tab(), "Sign PDF (PAdES)")
         tabs.addTab(self._build_verify_tab(), "Verify Signature")
+        tabs.addTab(self._build_expiry_tab(), "Expiry Check")
+        tabs.addTab(self._build_portal_tab(), "Portal Validator")
+        tabs.addTab(self._build_esign_tab(), "eSign (Aadhaar)")
         tabs.addTab(self._build_info_tab(), "India PKI Info")
         layout.addWidget(tabs, stretch=1)
 
@@ -419,6 +426,367 @@ class IndiaDSCPanel(BasePanel):
         text.setPlainText(content)
         l.addWidget(text, stretch=1)
         return w
+
+    # ------------------------------------------------------------------
+    # Tab 5 — Expiry Check
+    # ------------------------------------------------------------------
+
+    def _build_expiry_tab(self) -> QWidget:
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.setSpacing(8)
+
+        note = QLabel(
+            "DSC tokens expire after 1–2 years. Check expiry before a filing deadline "
+            "to avoid last-minute surprises."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#9CA3AF; font-size:11px;")
+        l.addWidget(note)
+
+        row = QHBoxLayout()
+        self._exp_cert = QLineEdit()
+        self._exp_cert.setPlaceholderText("Certificate PEM file (exported from token in Tab 1)")
+        btn = QPushButton("Browse…")
+        btn.setMaximumWidth(80)
+        btn.clicked.connect(lambda: self._browse_open(self._exp_cert))
+        row.addWidget(self._exp_cert)
+        row.addWidget(btn)
+        l.addLayout(row)
+
+        btn_check = QPushButton("Check Expiry")
+        btn_check.setStyleSheet("background:#1D4ED8; color:white; padding:8px; border-radius:6px; font-weight:bold;")
+        btn_check.clicked.connect(self._do_check_expiry)
+        l.addWidget(btn_check)
+
+        self._exp_alert = QLabel()
+        self._exp_alert.setWordWrap(True)
+        self._exp_alert.setStyleSheet("border-radius:6px; padding:10px; font-size:12px;")
+        self._exp_alert.hide()
+        l.addWidget(self._exp_alert)
+
+        self._exp_status = self.build_status_label()
+        l.addWidget(self._exp_status)
+        _, self._exp_out = self.build_output_area("Certificate Details")
+        l.addWidget(_, stretch=1)
+        return w
+
+    def _do_check_expiry(self):
+        cert = self._exp_cert.text().strip()
+        if not cert:
+            self._exp_status.setText("✗  Select a certificate file")
+            self._exp_status.setStyleSheet("color:#F87171;")
+            return
+        self.run_in_thread(check_certificate_expiry, cert, callback=self._on_expiry_done)
+
+    def _on_expiry_done(self, r):
+        self.show_result(r, self._exp_out, self._exp_status)
+        if r.success and r.parsed:
+            level = r.parsed.get("alert_level", "green")
+            days = r.parsed.get("days_remaining", 0)
+            status = r.parsed.get("status", "")
+            if level == "green":
+                colour = ("background:#064E3B; border:1px solid #34D399;", "#D1FAE5")
+                icon = "✓"
+            elif level == "amber":
+                colour = ("background:#78350F; border:1px solid #F59E0B;", "#FEF3C7")
+                icon = "!"
+            else:
+                colour = ("background:#7F1D1D; border:1px solid #F87171;", "#FEE2E2")
+                icon = "✗"
+            self._exp_alert.setStyleSheet(
+                f"{colour[0]} border-radius:6px; color:{colour[1]}; "
+                "font-size:13px; font-weight:bold; padding:10px;"
+            )
+            self._exp_alert.setText(
+                f"  {icon}  {status.upper().replace('_', ' ')} — {days} days remaining"
+            )
+            self._exp_alert.show()
+        else:
+            self._exp_alert.hide()
+
+    # ------------------------------------------------------------------
+    # Tab 3 — Sign PDF (PAdES)
+    # ------------------------------------------------------------------
+
+    def _build_sign_pdf_tab(self) -> QWidget:
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.setSpacing(8)
+
+        note = QLabel(
+            "Produces an embedded PDF signature accepted by MCA21, IT e-filing, and other portals.\n"
+            "Requires pyhanko + python-pkcs11 (pip install pyhanko python-pkcs11)."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(
+            "background:#1E3A5F; border:1px solid #3B82F6; border-radius:6px; "
+            "color:#BFDBFE; font-size:10px; padding:8px;"
+        )
+        l.addWidget(note)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self._spdf_lib = QComboBox()
+        self._spdf_lib.setEditable(True)
+        for name, path, present in detect_available_libs():
+            if present:
+                self._spdf_lib.addItem(name, path)
+        if self._spdf_lib.count() == 0:
+            for name, path in KNOWN_TOKEN_LIBS[:2]:
+                self._spdf_lib.addItem(name, path)
+        form.addRow("Token library:", self._spdf_lib)
+
+        self._spdf_pin = QLineEdit()
+        self._spdf_pin.setEchoMode(QLineEdit.EchoMode.Password)
+        self._spdf_pin.setPlaceholderText("Token PIN")
+        form.addRow("PIN:", self._spdf_pin)
+
+        self._spdf_in = QLineEdit()
+        self._spdf_in.setPlaceholderText("Input PDF to sign")
+        btn_in = QPushButton("Browse…")
+        btn_in.setMaximumWidth(80)
+        btn_in.clicked.connect(lambda: self._browse_open(self._spdf_in))
+        row_in = QHBoxLayout()
+        row_in.addWidget(self._spdf_in)
+        row_in.addWidget(btn_in)
+        form.addRow("Input PDF:", row_in)
+
+        self._spdf_out = QLineEdit()
+        self._spdf_out.setPlaceholderText("Output signed PDF")
+        btn_out = QPushButton("Browse…")
+        btn_out.setMaximumWidth(80)
+        btn_out.clicked.connect(lambda: self._browse_save_pdf(self._spdf_out))
+        row_out = QHBoxLayout()
+        row_out.addWidget(self._spdf_out)
+        row_out.addWidget(btn_out)
+        form.addRow("Output PDF:", row_out)
+
+        self._spdf_reason = QLineEdit("Digitally signed with India DSC")
+        form.addRow("Reason:", self._spdf_reason)
+
+        self._spdf_location = QLineEdit()
+        self._spdf_location.setPlaceholderText("Optional — e.g. Mumbai, India")
+        form.addRow("Location:", self._spdf_location)
+
+        self._spdf_tsa = QLineEdit()
+        self._spdf_tsa.setPlaceholderText("TSA URL for timestamp (required by GeM/CPPP, optional otherwise)")
+        form.addRow("TSA URL:", self._spdf_tsa)
+
+        self._spdf_cert_label = QLineEdit("Certificate")
+        form.addRow("Cert label:", self._spdf_cert_label)
+
+        self._spdf_key_label = QLineEdit("Private Key")
+        form.addRow("Key label:", self._spdf_key_label)
+
+        l.addLayout(form)
+
+        btn_sign = QPushButton("Sign PDF with Token")
+        btn_sign.setStyleSheet("background:#1D4ED8; color:white; padding:8px; border-radius:6px; font-weight:bold;")
+        btn_sign.clicked.connect(self._do_sign_pdf)
+        l.addWidget(btn_sign)
+
+        self._spdf_status = self.build_status_label()
+        l.addWidget(self._spdf_status)
+        _, self._spdf_out_text = self.build_output_area("Result / Command")
+        l.addWidget(_, stretch=1)
+        return w
+
+    def _browse_save_pdf(self, edit: QLineEdit):
+        path, _ = QFileDialog.getSaveFileName(self, "Save PDF", "", "PDF Files (*.pdf);;All Files (*)")
+        if path:
+            edit.setText(path)
+
+    def _do_sign_pdf(self):
+        lib = self._spdf_lib.currentData() or self._spdf_lib.currentText()
+        pin = self._spdf_pin.text()
+        in_pdf = self._spdf_in.text().strip()
+        out_pdf = self._spdf_out.text().strip()
+        reason = self._spdf_reason.text().strip() or "Digitally signed with India DSC"
+        location = self._spdf_location.text().strip()
+        tsa = self._spdf_tsa.text().strip()
+        cert_label = self._spdf_cert_label.text().strip() or "Certificate"
+        key_label = self._spdf_key_label.text().strip() or "Private Key"
+
+        if not in_pdf or not out_pdf:
+            self._spdf_status.setText("✗  Provide input and output PDF paths")
+            self._spdf_status.setStyleSheet("color:#F87171;")
+            return
+        self.run_in_thread(
+            sign_pdf_with_token, lib, in_pdf, out_pdf, pin,
+            cert_label, key_label, "Signature1", reason, location, "", tsa,
+            callback=lambda r: self.show_result(r, self._spdf_out_text, self._spdf_status),
+        )
+
+    # ------------------------------------------------------------------
+    # Tab 6 — Portal Validator
+    # ------------------------------------------------------------------
+
+    def _build_portal_tab(self) -> QWidget:
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.setSpacing(8)
+
+        note = QLabel(
+            "Run pre-signing checks before submitting to an e-governance portal. "
+            "Catches cert class, type, and PAN mismatches before you attempt to file."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#9CA3AF; font-size:11px;")
+        l.addWidget(note)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        row_cert = QHBoxLayout()
+        self._pv_cert = QLineEdit()
+        self._pv_cert.setPlaceholderText("Signer certificate PEM (exported from token)")
+        btn_cert = QPushButton("Browse…")
+        btn_cert.setMaximumWidth(80)
+        btn_cert.clicked.connect(lambda: self._browse_open(self._pv_cert))
+        row_cert.addWidget(self._pv_cert)
+        row_cert.addWidget(btn_cert)
+        form.addRow("Certificate:", row_cert)
+
+        self._pv_portal = QComboBox()
+        for p in list_supported_portals():
+            self._pv_portal.addItem(f"{p['key']} — {p['full_name']}", p["key"])
+        form.addRow("Portal:", self._pv_portal)
+
+        self._pv_pan = QLineEdit()
+        self._pv_pan.setPlaceholderText("PAN (required for IT e-filing check, optional for others)")
+        form.addRow("PAN:", self._pv_pan)
+
+        l.addLayout(form)
+
+        btn_validate = QPushButton("Validate for Portal")
+        btn_validate.setStyleSheet("background:#065F46; color:white; padding:8px; border-radius:6px; font-weight:bold;")
+        btn_validate.clicked.connect(self._do_validate_portal)
+        l.addWidget(btn_validate)
+
+        self._pv_status = self.build_status_label()
+        l.addWidget(self._pv_status)
+        _, self._pv_out = self.build_output_area("Validation Report")
+        l.addWidget(_, stretch=1)
+
+        # Notes area
+        self._pv_notes = QTextEdit()
+        self._pv_notes.setReadOnly(True)
+        self._pv_notes.setMaximumHeight(100)
+        self._pv_notes.setStyleSheet(
+            "background:#1F2937; color:#D1FAE5; border:1px solid #374151; border-radius:4px; font-size:10px;"
+        )
+        self._pv_notes.setPlaceholderText("Portal-specific notes will appear here after validation.")
+        l.addWidget(self._pv_notes)
+        return w
+
+    def _do_validate_portal(self):
+        cert = self._pv_cert.text().strip()
+        portal = self._pv_portal.currentData() or self._pv_portal.currentText().split("—")[0].strip()
+        pan = self._pv_pan.text().strip()
+        if not cert:
+            self._pv_status.setText("✗  Select a certificate file")
+            self._pv_status.setStyleSheet("color:#F87171;")
+            return
+        self.run_in_thread(
+            validate_for_portal, cert, portal, pan,
+            callback=self._on_portal_done,
+        )
+
+    def _on_portal_done(self, r):
+        self.show_result(r, self._pv_out, self._pv_status)
+        if r.parsed:
+            notes = r.parsed.get("notes", [])
+            format_str = r.parsed.get("format", "")
+            text = f"Format: {format_str}\n\nWorkflow notes:\n"
+            text += "\n".join(f"  • {n}" for n in notes)
+            self._pv_notes.setPlainText(text)
+
+    # ------------------------------------------------------------------
+    # Tab 7 — eSign (Aadhaar)
+    # ------------------------------------------------------------------
+
+    def _build_esign_tab(self) -> QWidget:
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.setSpacing(8)
+
+        banner = QLabel(
+            "eSign lets you sign documents using Aadhaar OTP — no USB token needed.\n"
+            "This tab builds the CCA eSign API v2.1 request XML.\n"
+            "You must register as an ASP with a licensed gateway (eMudhra, NSDL, CDAC) to submit it."
+        )
+        banner.setWordWrap(True)
+        banner.setStyleSheet(
+            "background:#1E3A5F; border:1px solid #3B82F6; border-radius:6px; "
+            "color:#BFDBFE; font-size:10px; padding:8px;"
+        )
+        l.addWidget(banner)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self._es_hash = QLineEdit()
+        self._es_hash.setPlaceholderText("SHA-256 hex digest of the document to sign")
+        form.addRow("Document hash:", self._es_hash)
+
+        btn_compute = QPushButton("Compute from file…")
+        btn_compute.setMaximumWidth(160)
+        btn_compute.clicked.connect(self._do_compute_hash)
+        form.addRow("", btn_compute)
+
+        self._es_algo = QComboBox()
+        for algo in ["SHA256", "SHA512", "SHA1"]:
+            self._es_algo.addItem(algo)
+        form.addRow("Hash algorithm:", self._es_algo)
+
+        self._es_asp_id = QLineEdit()
+        self._es_asp_id.setPlaceholderText("Your ASP ID (issued by gateway on registration)")
+        form.addRow("ASP ID:", self._es_asp_id)
+
+        self._es_txn = QLineEdit()
+        self._es_txn.setPlaceholderText("Transaction ID (auto-generated if blank)")
+        form.addRow("Transaction ID:", self._es_txn)
+
+        l.addLayout(form)
+
+        btn_build = QPushButton("Build eSign Request XML")
+        btn_build.setStyleSheet("background:#7C3AED; color:white; padding:8px; border-radius:6px; font-weight:bold;")
+        btn_build.clicked.connect(self._do_build_esign)
+        l.addWidget(btn_build)
+
+        self._es_status = self.build_status_label()
+        l.addWidget(self._es_status)
+        _, self._es_out = self.build_output_area("Request XML / ASP Gateway Info")
+        l.addWidget(_, stretch=1)
+        return w
+
+    def _do_compute_hash(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select Document", "", "All Files (*)")
+        if not path:
+            return
+        import hashlib
+        algo = self._es_algo.currentText().replace("-", "").lower()
+        h = hashlib.new(algo)
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        self._es_hash.setText(h.hexdigest())
+
+    def _do_build_esign(self):
+        doc_hash = self._es_hash.text().strip()
+        if not doc_hash:
+            self._es_status.setText("✗  Provide a document hash")
+            self._es_status.setStyleSheet("color:#F87171;")
+            return
+        algo = self._es_algo.currentText()
+        asp_id = self._es_asp_id.text().strip()
+        txn = self._es_txn.text().strip()
+        self.run_in_thread(
+            esign_build_request, doc_hash, algo, asp_id, txn,
+            callback=lambda r: self.show_result(r, self._es_out, self._es_status),
+        )
 
     # ------------------------------------------------------------------
 

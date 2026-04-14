@@ -1,0 +1,112 @@
+name: Build Executables
+
+# Triggers:
+#   - Push a version tag:  git tag v1.0.1 && git push origin v1.0.1
+#   - Manual run from GitHub Actions tab (workflow_dispatch)
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: sslOpenCrypt-Linux
+          - os: macos-latest
+            asset_name: sslOpenCrypt-macOS
+          - os: windows-latest
+            asset_name: sslOpenCrypt-Windows.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r sslopencrypt/requirements.txt
+          pip install pyinstaller
+
+      # UPX compresses the executable — skip on macOS (not available via brew by default)
+      - name: Install UPX (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y upx-ucl
+
+      - name: Install UPX (Windows)
+        if: runner.os == 'Windows'
+        run: choco install upx -y
+
+      - name: Build executable
+        working-directory: sslopencrypt
+        run: pyinstaller packaging/sslopencrypt.spec --distpath dist/ --workpath build/ --noconfirm
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: sslopencrypt/dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  release:
+    # Only run when triggered by a version tag push
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: ls -lh artifacts/
+
+      - name: Make Linux/macOS executables runnable
+        run: |
+          chmod +x artifacts/sslOpenCrypt-Linux || true
+          chmod +x artifacts/sslOpenCrypt-macOS || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: sslOpenCrypt ${{ github.ref_name }}
+          body: |
+            ## sslOpenCrypt ${{ github.ref_name }}
+
+            ### Downloads
+            | Platform | File | Notes |
+            |---|---|---|
+            | Linux (x86_64) | `sslOpenCrypt-Linux` | Requires OpenSSL, GnuPG installed |
+            | macOS (x86_64 / ARM) | `sslOpenCrypt-macOS` | Requires OpenSSL, GnuPG installed |
+            | Windows (x86_64) | `sslOpenCrypt-Windows.exe` | Requires OpenSSL, GnuPG installed |
+
+            ### First-run instructions
+            **Linux/macOS:** `chmod +x sslOpenCrypt-Linux && ./sslOpenCrypt-Linux`
+            **Windows:** Double-click `sslOpenCrypt-Windows.exe`
+
+            > **Note:** OpenSSL and GnuPG are system dependencies — they are not bundled.
+            > Install them before running: `sudo apt install openssl gnupg` (Linux),
+            > `brew install openssl gnupg` (macOS), or [slproweb.com/products/Win32OpenSSL](https://slproweb.com/products/Win32OpenSSL) (Windows).
+          files: |
+            artifacts/sslOpenCrypt-Linux
+            artifacts/sslOpenCrypt-macOS
+            artifacts/sslOpenCrypt-Windows.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
