@@ -10,8 +10,11 @@ cryptography>=41.0.0
 # Memory-hard key derivation (key vault, passphrase protection)
 argon2-cffi>=21.3.0
 
-# PDF signing support (Module 5 - PAdES, planned v1.0)
-# endesive>=2.10.0
+# PDF signing — Module 10 India DSC PAdES (embedded PDF signatures for MCA21/IT portal)
+pyhanko>=0.21.0
+# PKCS#11 hardware token interface (required by pyhanko for on-token signing)
+# Optional at runtime: the app degrades gracefully if not installed
+python-pkcs11>=0.7.0
 
 # Testing
 pytest>=7.0.0

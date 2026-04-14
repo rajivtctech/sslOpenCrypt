@@ -1,8 +1,8 @@
 name: Build Executables
 
 # Triggers:
-#   - Push a version tag:  git tag v1.0.1 && git push origin v1.0.1
-#   - Manual run from GitHub Actions tab (workflow_dispatch)
+#   - Push a version tag:  git tag v1.1.0 && git push origin v1.1.0
+#   - Manual run from the GitHub Actions tab (workflow_dispatch)
 on:
   push:
     tags:
@@ -15,12 +15,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             asset_name: sslOpenCrypt-Linux
-          - os: macos-latest
-            asset_name: sslOpenCrypt-macOS
+            platform_label: Linux (x86_64)
+
+          # macOS 13 = Intel x86_64 — also runs via Rosetta 2 on Apple Silicon
+          - os: macos-13
+            asset_name: sslOpenCrypt-macOS-Intel
+            platform_label: macOS Intel (x86_64)
+
+          # macOS 14 = Apple Silicon arm64
+          - os: macos-14
+            asset_name: sslOpenCrypt-macOS-AppleSilicon
+            platform_label: macOS Apple Silicon (arm64)
+
           - os: windows-latest
             asset_name: sslOpenCrypt-Windows.exe
+            platform_label: Windows (x86_64)
 
     runs-on: ${{ matrix.os }}
 
@@ -33,24 +44,81 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Cache pip packages across runs — saves ~60s per build on warm cache
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('sslopencrypt/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # Qt6 on Linux requires xcb and EGL platform plugins at build time
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1 \
+            libxkbcommon-x11-0 \
+            libegl1 \
+            libgl1 \
+            upx-ucl
+
+      - name: Install UPX (Windows)
+        if: runner.os == 'Windows'
+        run: choco install upx --yes --no-progress
+
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install -r sslopencrypt/requirements.txt
           pip install pyinstaller
 
-      # UPX compresses the executable — skip on macOS (not available via brew by default)
-      - name: Install UPX (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y upx-ucl
+      # python-pkcs11 needs a C compiler on some platforms.
+      # It is optional — the app degrades gracefully without it.
+      - name: Install python-pkcs11 (optional)
+        run: pip install python-pkcs11 || echo "python-pkcs11 not available on this platform — PKCS#11 hardware token support will be disabled in this build"
+        shell: bash
 
-      - name: Install UPX (Windows)
-        if: runner.os == 'Windows'
-        run: choco install upx -y
+      - name: Show build environment
+        run: |
+          python --version
+          pip show pyinstaller pyhanko cryptography argon2-cffi PyQt6 | grep -E "^(Name|Version)"
+        shell: bash
 
       - name: Build executable
         working-directory: sslopencrypt
-        run: pyinstaller packaging/sslopencrypt.spec --distpath dist/ --workpath build/ --noconfirm
+        run: >
+          pyinstaller packaging/sslopencrypt.spec
+          --distpath dist/
+          --workpath build/
+          --noconfirm
+
+      # Confirm the binary was actually produced and report its size
+      - name: Verify build output (Linux / macOS)
+        if: runner.os != 'Windows'
+        working-directory: sslopencrypt/dist
+        run: |
+          ls -lh
+          test -f "${{ matrix.asset_name }}" || (echo "ERROR: expected binary not found" && exit 1)
+          echo "Binary size: $(du -sh ${{ matrix.asset_name }} | cut -f1)"
+
+      - name: Verify build output (Windows)
+        if: runner.os == 'Windows'
+        working-directory: sslopencrypt/dist
+        run: |
+          dir
+          if (!(Test-Path "${{ matrix.asset_name }}")) { Write-Error "ERROR: expected binary not found"; exit 1 }
+          $size = (Get-Item "${{ matrix.asset_name }}").length / 1MB
+          Write-Host ("Binary size: {0:N1} MB" -f $size)
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -58,9 +126,10 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: sslopencrypt/dist/${{ matrix.asset_name }}
           if-no-files-found: error
+          retention-days: 30
 
   release:
-    # Only run when triggered by a version tag push
+    # Only publish a release when triggered by a version tag push
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-latest
@@ -77,10 +146,11 @@ jobs:
       - name: List downloaded artifacts
         run: ls -lh artifacts/
 
-      - name: Make Linux/macOS executables runnable
+      - name: Make Linux / macOS executables runnable
         run: |
-          chmod +x artifacts/sslOpenCrypt-Linux || true
-          chmod +x artifacts/sslOpenCrypt-macOS || true
+          chmod +x artifacts/sslOpenCrypt-Linux               || true
+          chmod +x artifacts/sslOpenCrypt-macOS-Intel         || true
+          chmod +x artifacts/sslOpenCrypt-macOS-AppleSilicon  || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -90,22 +160,46 @@ jobs:
             ## sslOpenCrypt ${{ github.ref_name }}
 
             ### Downloads
+
             | Platform | File | Notes |
             |---|---|---|
-            | Linux (x86_64) | `sslOpenCrypt-Linux` | Requires OpenSSL, GnuPG installed |
-            | macOS (x86_64 / ARM) | `sslOpenCrypt-macOS` | Requires OpenSSL, GnuPG installed |
-            | Windows (x86_64) | `sslOpenCrypt-Windows.exe` | Requires OpenSSL, GnuPG installed |
+            | Linux x86_64 | `sslOpenCrypt-Linux` | Ubuntu 22.04+, Debian 12+, Fedora 38+ |
+            | macOS Intel | `sslOpenCrypt-macOS-Intel` | macOS 13+ (x86_64; runs via Rosetta 2 on Apple Silicon) |
+            | macOS Apple Silicon | `sslOpenCrypt-macOS-AppleSilicon` | macOS 14+ (arm64 native) |
+            | Windows x86_64 | `sslOpenCrypt-Windows.exe` | Windows 10 / 11 |
 
-            ### First-run instructions
-            **Linux/macOS:** `chmod +x sslOpenCrypt-Linux && ./sslOpenCrypt-Linux`
-            **Windows:** Double-click `sslOpenCrypt-Windows.exe`
+            ### First run
 
-            > **Note:** OpenSSL and GnuPG are system dependencies — they are not bundled.
-            > Install them before running: `sudo apt install openssl gnupg` (Linux),
-            > `brew install openssl gnupg` (macOS), or [slproweb.com/products/Win32OpenSSL](https://slproweb.com/products/Win32OpenSSL) (Windows).
+            **Linux:**
+            ```bash
+            chmod +x sslOpenCrypt-Linux
+            ./sslOpenCrypt-Linux
+            ```
+
+            **macOS:**
+            ```bash
+            chmod +x sslOpenCrypt-macOS-Intel   # or AppleSilicon
+            # First run: right-click → Open (to bypass Gatekeeper on unsigned binary)
+            ./sslOpenCrypt-macOS-Intel
+            ```
+
+            **Windows:** Double-click `sslOpenCrypt-Windows.exe`. Windows SmartScreen may warn on first run — click **More info → Run anyway**.
+
+            ### System requirements
+
+            OpenSSL and (optionally) GnuPG must be installed on the host — they are **not bundled**.
+
+            | OS | Install |
+            |---|---|
+            | Ubuntu/Debian | `sudo apt install openssl gnupg` |
+            | macOS | `brew install openssl gnupg` |
+            | Windows | [Win64 OpenSSL](https://slproweb.com/products/Win32OpenSSL.html) + [Gpg4win](https://gpg4win.org) |
+
+            > **India DSC note:** On-token PKCS#11 signing and PAdES PDF signing require the vendor USB token driver (libcastle.so / libeToken.so on Linux, equivalent on macOS/Windows). These are not bundled and must be installed separately from the token manufacturer.
           files: |
             artifacts/sslOpenCrypt-Linux
-            artifacts/sslOpenCrypt-macOS
+            artifacts/sslOpenCrypt-macOS-Intel
+            artifacts/sslOpenCrypt-macOS-AppleSilicon
             artifacts/sslOpenCrypt-Windows.exe
           generate_release_notes: true
           draft: false

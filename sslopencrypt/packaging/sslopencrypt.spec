@@ -101,6 +101,30 @@ hidden_imports = [
     'cryptography.hazmat.backends.openssl',
     'cryptography.x509',
     'cryptography.x509.extensions',
+    # pyhanko — PAdES/CAdES PDF signing (Module 10 India DSC)
+    'pyhanko',
+    'pyhanko.sign',
+    'pyhanko.sign.signers',
+    'pyhanko.sign.signers.functions',
+    'pyhanko.sign.signers.pdf_signer',
+    'pyhanko.sign.fields',
+    'pyhanko.sign.pkcs11',
+    'pyhanko.sign.timestamps',
+    'pyhanko.sign.timestamps.api',
+    'pyhanko.pdf_utils',
+    'pyhanko.pdf_utils.incremental_writer',
+    'pyhanko_certvalidator',
+    # python-pkcs11 — PKCS#11 hardware token (optional; graceful degradation if absent)
+    'pkcs11',
+    'pkcs11.types',
+    'pkcs11.mechanisms',
+    'pkcs11.exceptions',
+    # lxml — required by pyhanko for PDF/XML processing
+    'lxml',
+    'lxml.etree',
+    # oscrypto — required by pyhanko-certvalidator
+    'oscrypto',
+    'oscrypto.asymmetric',
 ]
 
 a = Analysis(
