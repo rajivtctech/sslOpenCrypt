@@ -21,8 +21,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
-            asset_name: sslOpenCrypt-Linux
-            platform_label: Linux (x86_64)
+            asset_name: sslOpenCrypt-Linux.AppImage
+            platform_label: Linux (x86_64 — AppImage)
 
           # macos-13 (Intel x86_64) has been retired by GitHub — using macos-14
           # (Apple Silicon arm64) as the sole macOS target. Intel Mac users can
@@ -55,7 +55,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # Qt6 on Linux requires xcb and EGL platform plugins at build time
+      # Qt6 on Linux requires xcb and EGL platform plugins at build time.
+      # libfuse2 is required by appimagetool to build the AppImage.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -72,7 +73,8 @@ jobs:
             libxkbcommon-x11-0 \
             libegl1 \
             libgl1 \
-            upx-ucl
+            upx-ucl \
+            libfuse2
 
       - name: Install UPX (Windows)
         if: runner.os == 'Windows'
@@ -96,7 +98,16 @@ jobs:
           pip show pyinstaller pyhanko cryptography argon2-cffi PyQt6 | grep -E "^(Name|Version)"
         shell: bash
 
-      - name: Build executable
+      # Linux: build_appimage.sh runs PyInstaller (onedir) then wraps the
+      # output into a self-contained AppImage using appimagetool.
+      # macOS / Windows: standard PyInstaller onefile build.
+      - name: Build executable (Linux — AppImage)
+        if: runner.os == 'Linux'
+        working-directory: sslopencrypt
+        run: bash packaging/build_appimage.sh
+
+      - name: Build executable (macOS / Windows)
+        if: runner.os != 'Linux'
         working-directory: sslopencrypt
         run: >
           pyinstaller packaging/sslopencrypt.spec
@@ -104,15 +115,12 @@ jobs:
           --workpath build/
           --noconfirm
 
-      # The spec names the binary sslOpenCrypt-Linux / sslOpenCrypt-macOS /
-      # sslOpenCrypt-Windows based on sys.platform. Rename to the matrix
-      # asset_name so the upload step always finds the right file.
-      - name: Rename binary to asset name (Linux / macOS)
-        if: runner.os != 'Windows'
+      # macOS: rename the Mach-O binary to the matrix asset_name.
+      - name: Rename binary to asset name (macOS)
+        if: runner.os == 'macOS'
         working-directory: sslopencrypt/dist
         run: |
           ls -lh
-          # Find the binary produced (any executable file), rename if needed
           BUILT=$(find . -maxdepth 1 -type f -not -name "*.pkg" | head -1 | sed 's|^\./||')
           echo "Built file: $BUILT"
           if [ "$BUILT" != "${{ matrix.asset_name }}" ]; then
@@ -135,6 +143,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
+          # Linux AppImage lands in dist/; macOS/Windows also land in dist/
           path: sslopencrypt/dist/${{ matrix.asset_name }}
           if-no-files-found: error
           retention-days: 30
@@ -159,8 +168,8 @@ jobs:
 
       - name: Make Linux / macOS executables runnable
         run: |
-          chmod +x artifacts/sslOpenCrypt-Linux  || true
-          chmod +x artifacts/sslOpenCrypt-macOS  || true
+          chmod +x artifacts/sslOpenCrypt-Linux.AppImage || true
+          chmod +x artifacts/sslOpenCrypt-macOS          || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -173,17 +182,20 @@ jobs:
 
             | Platform | File | Notes |
             |---|---|---|
-            | Linux x86_64 | `sslOpenCrypt-Linux` | Ubuntu 22.04+, Debian 12+, Fedora 38+ |
+            | Linux x86_64 | `sslOpenCrypt-Linux.AppImage` | Ubuntu 22.04+, Debian 12+, Fedora 38+. AppImage — no installation required. |
             | macOS (Apple Silicon) | `sslOpenCrypt-macOS` | macOS 14+ native arm64; also runs on Intel Mac via Rosetta 2 |
             | Windows x86_64 | `sslOpenCrypt-Windows.exe` | Windows 10 / 11 |
 
-            ### First run
+            ### Running from a USB pendrive
 
-            **Linux:**
+            All binaries are self-contained — no installation required on any platform.
+
+            **Linux (AppImage):**
             ```bash
-            chmod +x sslOpenCrypt-Linux
-            ./sslOpenCrypt-Linux
+            chmod +x sslOpenCrypt-Linux.AppImage
+            ./sslOpenCrypt-Linux.AppImage
             ```
+            The AppImage mounts itself via FUSE and runs in-place. No extraction to `/tmp`.
 
             **macOS:**
             ```bash
@@ -206,7 +218,7 @@ jobs:
 
             > **India DSC note:** On-token PKCS#11 signing and PAdES PDF signing require the vendor USB token driver (libcastle.so / libeToken.so on Linux, equivalent on macOS/Windows). These are not bundled and must be installed separately from the token manufacturer.
           files: |
-            artifacts/sslOpenCrypt-Linux
+            artifacts/sslOpenCrypt-Linux.AppImage
             artifacts/sslOpenCrypt-macOS
             artifacts/sslOpenCrypt-Windows.exe
           generate_release_notes: true

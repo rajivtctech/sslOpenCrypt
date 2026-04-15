@@ -27,11 +27,18 @@ from modules.symmetric.ghost_crypt import (
     GHOST_NONCE_LEN,
     GHOST_TAG_LEN,
     SUPPORTED_CIPHERS,
+    DENIABLE_CAP_ALIGN,
+    DENIABLE_LEN_PREFIX,
     create_container,
     create_container_from_bytes,
     open_container,
     open_container_from_bytes,
+    create_deniable_container,
+    open_deniable_container,
+    create_deniable_from_bytes,
+    open_deniable_from_bytes,
     _derive_key,
+    _deniable_capacity,
 )
 
 
@@ -341,3 +348,249 @@ class TestFileApi:
         r_dec = open_container(str(container), str(out), PASSPHRASE)
         assert r_dec.success
         assert out.read_bytes() == payload
+
+
+# ---------------------------------------------------------------------------
+# Ghost Crypt v1.2 — deniable containers
+# ---------------------------------------------------------------------------
+
+REAL_PASS = "real-secret-hunter2"
+DECOY_PASS = "decoy-harmless-data"
+WRONG_DENIABLE = "wrong-totally-wrong"
+
+REAL_CONTENT = b"TOP SECRET: the real payload goes here."
+DECOY_CONTENT = b"Nothing interesting: just some draft notes."
+
+
+class TestDeniableCapacity:
+    def test_aligned_to_64(self):
+        cap = _deniable_capacity(10, 10)
+        assert cap % DENIABLE_CAP_ALIGN == 0
+
+    def test_minimum_accommodates_larger_side(self):
+        cap = _deniable_capacity(100, 200)
+        # must be able to store 200 + DENIABLE_LEN_PREFIX bytes
+        assert cap >= 200 + DENIABLE_LEN_PREFIX
+
+    def test_symmetric(self):
+        assert _deniable_capacity(50, 100) == _deniable_capacity(100, 50)
+
+    def test_zero_both(self):
+        cap = _deniable_capacity(0, 0)
+        assert cap >= DENIABLE_LEN_PREFIX
+        assert cap % DENIABLE_CAP_ALIGN == 0
+
+    def test_large_real(self):
+        cap = _deniable_capacity(10_000, 1)
+        assert cap >= 10_000 + DENIABLE_LEN_PREFIX
+
+
+class TestDeniableContainerBytes:
+    """Bytes API: create_deniable_from_bytes / open_deniable_from_bytes."""
+
+    def _make(self, real=REAL_CONTENT, decoy=DECOY_CONTENT, cipher="AES-256-GCM"):
+        return create_deniable_from_bytes(real, decoy, REAL_PASS, DECOY_PASS, cipher)
+
+    def test_create_succeeds(self):
+        r = self._make()
+        assert r.success
+        assert "container_bytes" in r.parsed
+
+    def test_container_is_even_size(self):
+        r = self._make()
+        blob = r.parsed["container_bytes"]
+        assert len(blob) % 2 == 0
+
+    def test_container_size_equals_2x_segment(self):
+        r = self._make()
+        blob = r.parsed["container_bytes"]
+        assert len(blob) == 2 * r.parsed["segment_size"]
+
+    def test_version_field(self):
+        r = self._make()
+        assert r.parsed["version"] == "1.2"
+
+    def test_real_passphrase_returns_real_content(self):
+        r = self._make()
+        blob = r.parsed["container_bytes"]
+        result = open_deniable_from_bytes(blob, REAL_PASS)
+        assert result.success
+        assert result.parsed["plaintext_bytes"] == REAL_CONTENT
+
+    def test_decoy_passphrase_returns_decoy_content(self):
+        r = self._make()
+        blob = r.parsed["container_bytes"]
+        result = open_deniable_from_bytes(blob, DECOY_PASS)
+        assert result.success
+        assert result.parsed["plaintext_bytes"] == DECOY_CONTENT
+
+    def test_wrong_passphrase_fails(self):
+        r = self._make()
+        blob = r.parsed["container_bytes"]
+        result = open_deniable_from_bytes(blob, WRONG_DENIABLE)
+        assert not result.success
+        assert "Authentication failed" in result.stderr
+
+    def test_real_and_decoy_are_independent(self):
+        """Decoy passphrase must not decrypt to real content and vice versa."""
+        r = self._make()
+        blob = r.parsed["container_bytes"]
+        real_result = open_deniable_from_bytes(blob, REAL_PASS)
+        decoy_result = open_deniable_from_bytes(blob, DECOY_PASS)
+        assert real_result.parsed["plaintext_bytes"] != decoy_result.parsed["plaintext_bytes"]
+
+    def test_two_creates_produce_different_blobs(self):
+        """CSPRNG ensures no two containers are identical."""
+        b1 = self._make().parsed["container_bytes"]
+        b2 = self._make().parsed["container_bytes"]
+        assert b1 != b2
+
+    def test_container_has_no_magic_header(self):
+        blob = self._make().parsed["container_bytes"]
+        assert blob[:4] not in (b"\x89PNG", b"PK\x03\x04", b"MZ\x00\x00", b"\x7fELF", b"GHOST")
+
+    def test_unsupported_cipher_create_fails(self):
+        r = create_deniable_from_bytes(REAL_CONTENT, DECOY_CONTENT, REAL_PASS, DECOY_PASS, "DES-ECB")
+        assert not r.success
+
+    def test_unsupported_cipher_open_fails(self):
+        r = self._make()
+        blob = r.parsed["container_bytes"]
+        result = open_deniable_from_bytes(blob, REAL_PASS, cipher="DES-ECB")
+        assert not result.success
+
+    def test_too_small_blob_fails(self):
+        result = open_deniable_from_bytes(b"\x00" * 10, REAL_PASS)
+        assert not result.success
+
+    def test_odd_size_blob_fails(self):
+        # odd-size can't be a valid two-segment container
+        r = self._make()
+        blob = r.parsed["container_bytes"]
+        result = open_deniable_from_bytes(blob[:-1], REAL_PASS)
+        assert not result.success
+
+    def test_chacha20_round_trip(self):
+        r = create_deniable_from_bytes(REAL_CONTENT, DECOY_CONTENT, REAL_PASS, DECOY_PASS,
+                                       cipher="ChaCha20-Poly1305")
+        assert r.success
+        blob = r.parsed["container_bytes"]
+        out = open_deniable_from_bytes(blob, REAL_PASS, cipher="ChaCha20-Poly1305")
+        assert out.success
+        assert out.parsed["plaintext_bytes"] == REAL_CONTENT
+
+    def test_empty_real_content(self):
+        r = create_deniable_from_bytes(b"", DECOY_CONTENT, REAL_PASS, DECOY_PASS)
+        assert r.success
+        blob = r.parsed["container_bytes"]
+        out = open_deniable_from_bytes(blob, REAL_PASS)
+        assert out.success
+        assert out.parsed["plaintext_bytes"] == b""
+
+    def test_equal_size_payloads(self):
+        content = b"A" * 100
+        r = create_deniable_from_bytes(content, content, REAL_PASS, DECOY_PASS)
+        assert r.success
+        out = open_deniable_from_bytes(r.parsed["container_bytes"], REAL_PASS)
+        assert out.success
+        assert out.parsed["plaintext_bytes"] == content
+
+
+class TestDeniableContainerFiles:
+    """File API: create_deniable_container / open_deniable_container."""
+
+    def test_round_trip_real(self, tmp_path):
+        real_f = tmp_path / "real.txt"
+        decoy_f = tmp_path / "decoy.txt"
+        container = tmp_path / "secret.ghost"
+        out = tmp_path / "recovered.txt"
+
+        real_f.write_bytes(REAL_CONTENT)
+        decoy_f.write_bytes(DECOY_CONTENT)
+
+        r = create_deniable_container(str(real_f), str(decoy_f), str(container), REAL_PASS, DECOY_PASS)
+        assert r.success
+
+        result = open_deniable_container(str(container), str(out), REAL_PASS)
+        assert result.success
+        assert out.read_bytes() == REAL_CONTENT
+
+    def test_round_trip_decoy(self, tmp_path):
+        real_f = tmp_path / "real.txt"
+        decoy_f = tmp_path / "decoy.txt"
+        container = tmp_path / "secret.ghost"
+        out = tmp_path / "recovered.txt"
+
+        real_f.write_bytes(REAL_CONTENT)
+        decoy_f.write_bytes(DECOY_CONTENT)
+
+        create_deniable_container(str(real_f), str(decoy_f), str(container), REAL_PASS, DECOY_PASS)
+        result = open_deniable_container(str(container), str(out), DECOY_PASS)
+        assert result.success
+        assert out.read_bytes() == DECOY_CONTENT
+
+    def test_output_permissions(self, tmp_path):
+        real_f = tmp_path / "real.bin"
+        decoy_f = tmp_path / "decoy.bin"
+        container = tmp_path / "c.ghost"
+        out = tmp_path / "out.bin"
+        real_f.write_bytes(REAL_CONTENT)
+        decoy_f.write_bytes(DECOY_CONTENT)
+
+        create_deniable_container(str(real_f), str(decoy_f), str(container), REAL_PASS, DECOY_PASS)
+        open_deniable_container(str(container), str(out), REAL_PASS)
+        assert oct(out.stat().st_mode)[-3:] == "600"
+
+    def test_wrong_passphrase_file(self, tmp_path):
+        real_f = tmp_path / "r.bin"
+        decoy_f = tmp_path / "d.bin"
+        container = tmp_path / "c.ghost"
+        out = tmp_path / "out.bin"
+        real_f.write_bytes(REAL_CONTENT)
+        decoy_f.write_bytes(DECOY_CONTENT)
+
+        create_deniable_container(str(real_f), str(decoy_f), str(container), REAL_PASS, DECOY_PASS)
+        result = open_deniable_container(str(container), str(out), WRONG_DENIABLE)
+        assert not result.success
+        assert "Authentication failed" in result.stderr
+
+    def test_missing_real_file(self, tmp_path):
+        decoy_f = tmp_path / "decoy.txt"
+        decoy_f.write_bytes(DECOY_CONTENT)
+        result = create_deniable_container(
+            str(tmp_path / "nonexistent.txt"), str(decoy_f),
+            str(tmp_path / "out.ghost"), REAL_PASS, DECOY_PASS,
+        )
+        assert not result.success
+
+    def test_missing_decoy_file(self, tmp_path):
+        real_f = tmp_path / "real.txt"
+        real_f.write_bytes(REAL_CONTENT)
+        result = create_deniable_container(
+            str(real_f), str(tmp_path / "nonexistent.txt"),
+            str(tmp_path / "out.ghost"), REAL_PASS, DECOY_PASS,
+        )
+        assert not result.success
+
+    def test_parsed_fields_present(self, tmp_path):
+        real_f = tmp_path / "r.bin"
+        decoy_f = tmp_path / "d.bin"
+        container = tmp_path / "c.ghost"
+        real_f.write_bytes(REAL_CONTENT)
+        decoy_f.write_bytes(DECOY_CONTENT)
+
+        r = create_deniable_container(str(real_f), str(decoy_f), str(container), REAL_PASS, DECOY_PASS)
+        assert r.success
+        for key in ("cipher", "real_size", "decoy_size", "capacity", "segment_size", "container_size", "version"):
+            assert key in r.parsed
+
+    def test_container_size_is_2x_segment_size(self, tmp_path):
+        real_f = tmp_path / "r.bin"
+        decoy_f = tmp_path / "d.bin"
+        container = tmp_path / "c.ghost"
+        real_f.write_bytes(REAL_CONTENT)
+        decoy_f.write_bytes(DECOY_CONTENT)
+
+        r = create_deniable_container(str(real_f), str(decoy_f), str(container), REAL_PASS, DECOY_PASS)
+        assert r.parsed["container_size"] == 2 * r.parsed["segment_size"]
+        assert container.stat().st_size == r.parsed["container_size"]

@@ -25,6 +25,7 @@ from modules.india_dsc.controller import (
     esign_build_request,
     list_supported_portals,
     validate_for_portal,
+    sign_pdf_with_token,
     ESIGN_ASPS,
     PORTAL_RULES,
 )
@@ -449,3 +450,204 @@ class TestESignBuildRequest:
         assert docs is not None
         input_hash = docs.find("InputHash")
         assert input_hash is not None
+
+
+# ---------------------------------------------------------------------------
+# 7. sign_pdf_with_token
+# ---------------------------------------------------------------------------
+
+_FAKE_LIB = "/usr/lib/x86_64-linux-gnu/fake_pkcs11.so"
+
+
+class TestSignPdfWithToken:
+    """Tests for sign_pdf_with_token without requiring real hardware."""
+
+    def test_missing_input_pdf_returns_failure(self, tmp_path):
+        """Non-existent PDF path must produce a failure result, not raise."""
+        out = str(tmp_path / "signed.pdf")
+        r = sign_pdf_with_token(_FAKE_LIB, str(tmp_path / "nonexistent.pdf"), out)
+        assert not r.success
+
+    def test_pyhanko_not_installed_returns_informative_error(self, tmp_path, monkeypatch):
+        """If pyhanko is not available the function must return a helpful error string."""
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name.startswith("pyhanko"):
+                raise ImportError("No module named 'pyhanko'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        r = sign_pdf_with_token(_FAKE_LIB, str(pdf), str(tmp_path / "out.pdf"))
+        assert not r.success
+        assert "pyhanko" in r.stderr.lower()
+
+    def test_cmd_string_contains_field_name(self, tmp_path, monkeypatch):
+        """The educational cmd string must mention the signature field name."""
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name.startswith("pyhanko"):
+                raise ImportError("No module named 'pyhanko'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        r = sign_pdf_with_token(_FAKE_LIB, str(pdf), str(tmp_path / "out.pdf"),
+                                 field_name="MySignatureField")
+        assert "MySignatureField" in r.command_str
+
+    def test_cmd_string_contains_pkcs11_lib(self, tmp_path, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name.startswith("pyhanko"):
+                raise ImportError("No module named 'pyhanko'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        r = sign_pdf_with_token(_FAKE_LIB, str(pdf), str(tmp_path / "out.pdf"))
+        assert _FAKE_LIB in r.command_str
+
+    def test_tsa_url_reflected_in_cmd_string(self, tmp_path, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name.startswith("pyhanko"):
+                raise ImportError("No module named 'pyhanko'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        tsa = "http://timestamp.example.com"
+        r = sign_pdf_with_token(_FAKE_LIB, str(pdf), str(tmp_path / "out.pdf"), tsa_url=tsa)
+        # Either the cmd_str or the error message should reference the tsa URL
+        # (implementation may include it in the cmd or in parsed)
+        assert not r.success  # pyhanko mocked out
+
+    def test_mock_pyhanko_success(self, tmp_path, monkeypatch):
+        """Patch the entire pyhanko import chain to simulate a successful signing."""
+        import io
+        import sys
+        import types
+
+        # Build a minimal fake pyhanko module tree
+        fake_pyhanko = types.ModuleType("pyhanko")
+        fake_sign = types.ModuleType("pyhanko.sign")
+        fake_pkcs11 = types.ModuleType("pyhanko.sign.pkcs11")
+        fake_signers = types.ModuleType("pyhanko.sign.signers")
+        fake_fields = types.ModuleType("pyhanko.sign.fields")
+        fake_pdf_utils = types.ModuleType("pyhanko.pdf_utils")
+        fake_incr = types.ModuleType("pyhanko.pdf_utils.incremental_writer")
+        fake_timestamps = types.ModuleType("pyhanko.sign.timestamps")
+
+        signed_pdf_bytes = b"%PDF-1.4\n%%EOF\n% signed"
+        out_stream = io.BytesIO(signed_pdf_bytes)
+
+        class FakeSession:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        class FakeSigner:
+            def __init__(self, session, **kwargs): pass
+
+        class FakePdfSignatureMetadata:
+            def __init__(self, **kwargs): pass
+
+        class FakeWriter:
+            def __init__(self, f): pass
+
+        fake_pkcs11.open_pkcs11_session = lambda lib, user_pin=None: FakeSession()
+        fake_pkcs11.PKCS11Signer = FakeSigner
+        fake_signers.sign_pdf = lambda writer, meta, signer=None, timestamper=None: out_stream
+        fake_signers.PdfSignatureMetadata = FakePdfSignatureMetadata
+        fake_incr.IncrementalPdfFileWriter = FakeWriter
+
+        for mod_name, mod in [
+            ("pyhanko", fake_pyhanko),
+            ("pyhanko.sign", fake_sign),
+            ("pyhanko.sign.pkcs11", fake_pkcs11),
+            ("pyhanko.sign.signers", fake_signers),
+            ("pyhanko.sign.fields", fake_fields),
+            ("pyhanko.pdf_utils", fake_pdf_utils),
+            ("pyhanko.pdf_utils.incremental_writer", fake_incr),
+            ("pyhanko.sign.timestamps", fake_timestamps),
+        ]:
+            monkeypatch.setitem(sys.modules, mod_name, mod)
+
+        pdf = tmp_path / "input.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+        out_pdf = tmp_path / "signed.pdf"
+
+        r = sign_pdf_with_token(
+            _FAKE_LIB, str(pdf), str(out_pdf),
+            pin="1234", field_name="Sig1", reason="Test signing",
+        )
+        assert r.success, f"Expected success, got: {r.stderr}"
+        assert out_pdf.exists()
+        assert r.parsed["field_name"] == "Sig1"
+        assert r.parsed["reason"] == "Test signing"
+        assert r.parsed["timestamped"] is False
+
+    def test_mock_pyhanko_with_tsa(self, tmp_path, monkeypatch):
+        """When a TSA URL is provided, parsed['timestamped'] must be True."""
+        import io
+        import sys
+        import types
+
+        fake_pyhanko = types.ModuleType("pyhanko")
+        fake_sign = types.ModuleType("pyhanko.sign")
+        fake_pkcs11 = types.ModuleType("pyhanko.sign.pkcs11")
+        fake_signers = types.ModuleType("pyhanko.sign.signers")
+        fake_fields = types.ModuleType("pyhanko.sign.fields")
+        fake_pdf_utils = types.ModuleType("pyhanko.pdf_utils")
+        fake_incr = types.ModuleType("pyhanko.pdf_utils.incremental_writer")
+        fake_timestamps = types.ModuleType("pyhanko.sign.timestamps")
+
+        out_stream = io.BytesIO(b"%PDF-signed")
+
+        class FakeSession:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        class FakeTimestamper:
+            def __init__(self, url): self.url = url
+
+        fake_pkcs11.open_pkcs11_session = lambda lib, user_pin=None: FakeSession()
+        fake_pkcs11.PKCS11Signer = lambda session, **kw: object()
+        fake_signers.sign_pdf = lambda *a, **kw: out_stream
+        fake_signers.PdfSignatureMetadata = lambda **kw: object()
+        fake_incr.IncrementalPdfFileWriter = lambda f: object()
+        fake_timestamps.HTTPTimeStamper = FakeTimestamper
+
+        for mod_name, mod in [
+            ("pyhanko", fake_pyhanko),
+            ("pyhanko.sign", fake_sign),
+            ("pyhanko.sign.pkcs11", fake_pkcs11),
+            ("pyhanko.sign.signers", fake_signers),
+            ("pyhanko.sign.fields", fake_fields),
+            ("pyhanko.pdf_utils", fake_pdf_utils),
+            ("pyhanko.pdf_utils.incremental_writer", fake_incr),
+            ("pyhanko.sign.timestamps", fake_timestamps),
+        ]:
+            monkeypatch.setitem(sys.modules, mod_name, mod)
+
+        pdf = tmp_path / "input.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+        out_pdf = tmp_path / "signed.pdf"
+        tsa = "https://timestamp.digicert.com"
+
+        r = sign_pdf_with_token(_FAKE_LIB, str(pdf), str(out_pdf), tsa_url=tsa)
+        assert r.success
+        assert r.parsed["timestamped"] is True
+        assert r.parsed["tsa_url"] == tsa

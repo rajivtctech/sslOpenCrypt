@@ -2,10 +2,16 @@
 #
 # PyInstaller spec for sslOpenCrypt
 #
-# Build (run from the sslopencrypt/ directory):
-#   pyinstaller packaging/sslopencrypt.spec
+# Platform outputs
+# ----------------
+#   Linux   : dist/sslOpenCrypt-Linux/   (one-dir — wrapped into AppImage by build_appimage.sh)
+#   macOS   : dist/sslOpenCrypt-macOS    (one-file Mach-O)
+#   Windows : dist/sslOpenCrypt-Windows.exe (one-file PE)
 #
-# Output: dist/sslOpenCrypt  (Linux/macOS)  or  dist/sslOpenCrypt.exe  (Windows)
+# Build (run from the sslopencrypt/ directory):
+#   Linux   : pyinstaller packaging/sslopencrypt.spec   # then run build_appimage.sh
+#   macOS   : pyinstaller packaging/sslopencrypt.spec
+#   Windows : pyinstaller packaging/sslopencrypt.spec
 #
 # NOTE: openssl and gpg are system binaries invoked via subprocess — they are NOT
 # bundled. Users must have OpenSSL and (optionally) GnuPG installed on their system.
@@ -155,28 +161,72 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name=EXE_NAME,
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    # console=True keeps CLI mode working on all platforms.
-    # On Windows this means a console window appears briefly when launching
-    # the GUI by double-click — acceptable for a developer/admin tool.
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=None,
-)
+if sys.platform in ('win32', 'darwin'):
+    # -----------------------------------------------------------------------
+    # Windows / macOS — single self-contained file for pendrive distribution
+    # -----------------------------------------------------------------------
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        [],
+        name=EXE_NAME,
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        # console=True keeps CLI mode working on all platforms.
+        # On Windows this means a console window appears briefly when launching
+        # the GUI by double-click — acceptable for a developer/admin tool.
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=None,
+    )
+
+else:
+    # -----------------------------------------------------------------------
+    # Linux — one-directory output, wrapped into an AppImage by build_appimage.sh
+    #
+    # AppImage is the standard portable Linux application format.
+    # The resulting sslOpenCrypt-Linux.AppImage is a single executable file
+    # that requires only: chmod +x sslOpenCrypt-Linux.AppImage
+    # No installation, no extraction to /tmp, FUSE-mounted in-place.
+    # -----------------------------------------------------------------------
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],                   # binaries/datas go into COLLECT, not into the EXE
+        name=EXE_NAME,
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=None,
+    )
+
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name=EXE_NAME,        # output directory: dist/sslOpenCrypt-Linux/
+    )

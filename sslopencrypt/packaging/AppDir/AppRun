@@ -1,0 +1,18 @@
+#!/bin/bash
+# AppRun — entry point for the sslOpenCrypt AppImage.
+#
+# $APPDIR is set by the AppImage runtime to the mount point of the squashfs
+# image.  All paths must be relative to $APPDIR so the AppImage works from
+# any location (USB pendrive, home directory, /opt, etc.).
+
+HERE="$(dirname "$(readlink -f "${0}")")"
+
+# Add the bundled directory to PATH so that the PyInstaller-collected shared
+# libraries are found before any system libraries.
+export PATH="${HERE}:${PATH}"
+
+# Respect an existing LD_LIBRARY_PATH if set; prepend ours.
+export LD_LIBRARY_PATH="${HERE}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# Launch the application, forwarding all arguments (supports --cli mode).
+exec "${HERE}/sslOpenCrypt-Linux" "$@"

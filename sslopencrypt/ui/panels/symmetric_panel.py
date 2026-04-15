@@ -15,6 +15,7 @@ from modules.symmetric.controller import (
 from modules.symmetric.ghost_crypt import (
     SUPPORTED_CIPHERS as GHOST_CIPHERS,
     create_container, open_container,
+    create_deniable_container, open_deniable_container,
 )
 from .base_panel import BasePanel
 
@@ -233,21 +234,38 @@ class SymmetricPanel(BasePanel):
         self.show_result(r, self._st_out, self._st_status)
 
     # ------------------------------------------------------------------
-    # Ghost Crypt tab (Expert Mode only)
+    # Ghost Crypt tab (Expert Mode only) — inner sub-tabs: v1.1 Standard | v1.2 Deniable
     # ------------------------------------------------------------------
 
     def _build_ghost_crypt_tab(self) -> QWidget:
         """
-        Ghost Crypt tab: deniable, headerless AES-256-GCM / ChaCha20-Poly1305
-        container.  Shown only in Expert Mode.
+        Ghost Crypt outer tab: holds two inner sub-tabs.
+          v1.1 Standard  — single-layer headerless container
+          v1.2 Deniable  — dual-layer container with plausible deniability under coercion
+        Shown only in Expert Mode.
         """
+        w = QWidget()
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 6, 0, 0)
+        outer.setSpacing(0)
+
+        inner_tabs = QTabWidget()
+        inner_tabs.setStyleSheet("QTabBar::tab { padding: 5px 14px; }")
+        inner_tabs.addTab(self._build_gc_standard_tab(), "v1.1 — Standard")
+        inner_tabs.addTab(self._build_gc_deniable_tab(), "v1.2 — Deniable")
+        outer.addWidget(inner_tabs)
+        return w
+
+    # ---- v1.1 Standard sub-tab ----
+
+    def _build_gc_standard_tab(self) -> QWidget:
         w = QWidget()
         l = QVBoxLayout(w)
         l.setSpacing(10)
+        l.setContentsMargins(10, 10, 10, 10)
 
-        # Info banner
         info = QLabel(
-            "Ghost Crypt creates a binary container indistinguishable from random noise.\n"
+            "Ghost Crypt v1.1 creates a single-layer container indistinguishable from random noise.\n"
             "No magic bytes, no header, no length field — only the passphrase reveals its content.\n"
             "Key derivation: Argon2id (t=3, m=64 MiB, p=4).  Cipher: AES-256-GCM or ChaCha20-Poly1305."
         )
@@ -292,24 +310,19 @@ class SymmetricPanel(BasePanel):
 
         l.addLayout(form)
 
-        # Action buttons
         btns = QHBoxLayout()
         self._gc_btn_create = QPushButton("Create Container")
         self._gc_btn_create.setStyleSheet(
             "background:#1D4ED8; color:white; padding:8px; border-radius:6px; font-weight:bold;"
         )
-        self._gc_btn_create.setToolTip(
-            "Encrypt the input file into a headerless Ghost Crypt container"
-        )
+        self._gc_btn_create.setToolTip("Encrypt the input file into a headerless Ghost Crypt container")
         self._gc_btn_create.clicked.connect(self._do_gc_create)
 
         self._gc_btn_open = QPushButton("Open Container")
         self._gc_btn_open.setStyleSheet(
             "background:#065F46; color:white; padding:8px; border-radius:6px; font-weight:bold;"
         )
-        self._gc_btn_open.setToolTip(
-            "Decrypt an existing Ghost Crypt container to a plaintext file"
-        )
+        self._gc_btn_open.setToolTip("Decrypt an existing Ghost Crypt container to a plaintext file")
         self._gc_btn_open.clicked.connect(self._do_gc_open)
 
         btns.addWidget(self._gc_btn_create)
@@ -321,7 +334,125 @@ class SymmetricPanel(BasePanel):
 
         _, self._gc_out_text = self.build_output_area("Result")
         l.addWidget(_, stretch=1)
+        return w
 
+    # ---- v1.2 Deniable sub-tab ----
+
+    def _build_gc_deniable_tab(self) -> QWidget:
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.setSpacing(10)
+        l.setContentsMargins(10, 10, 10, 10)
+
+        info = QLabel(
+            "Ghost Crypt v1.2 — dual-layer deniable container.\n"
+            "Holds two independently encrypted payloads: real content and decoy content.\n"
+            "Under coercion, reveal only the DECOY passphrase — the real payload cannot be proven to exist.\n"
+            "Layout: segment 0 (real) ‖ segment 1 (decoy).  Opener tries both; returns whichever matches."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(
+            "background:#3B1F14; border:1px solid #F97316; border-radius:6px; "
+            "color:#FED7AA; font-size:10px; padding:8px;"
+        )
+        l.addWidget(info)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        # Real content (create only)
+        self._gcd_real = QLineEdit()
+        self._gcd_real.setPlaceholderText("Real content file (used when creating)")
+        btn_real = QPushButton("Browse…")
+        btn_real.setMaximumWidth(80)
+        btn_real.clicked.connect(lambda: self._browse(self._gcd_real))
+        row_real = QHBoxLayout()
+        row_real.addWidget(self._gcd_real)
+        row_real.addWidget(btn_real)
+        form.addRow("Real content:", row_real)
+
+        # Decoy content (create only)
+        self._gcd_decoy = QLineEdit()
+        self._gcd_decoy.setPlaceholderText("Decoy content file (used when creating)")
+        btn_decoy = QPushButton("Browse…")
+        btn_decoy.setMaximumWidth(80)
+        btn_decoy.clicked.connect(lambda: self._browse(self._gcd_decoy))
+        row_decoy = QHBoxLayout()
+        row_decoy.addWidget(self._gcd_decoy)
+        row_decoy.addWidget(btn_decoy)
+        form.addRow("Decoy content:", row_decoy)
+
+        # Container path
+        self._gcd_container = QLineEdit()
+        self._gcd_container.setPlaceholderText("Container file (.ghost)")
+        btn_cont = QPushButton("Browse…")
+        btn_cont.setMaximumWidth(80)
+        btn_cont.clicked.connect(lambda: self._browse_save(self._gcd_container))
+        row_cont = QHBoxLayout()
+        row_cont.addWidget(self._gcd_container)
+        row_cont.addWidget(btn_cont)
+        form.addRow("Container:", row_cont)
+
+        # Output (open only)
+        self._gcd_out = QLineEdit()
+        self._gcd_out.setPlaceholderText("Output file (used when opening)")
+        btn_out = QPushButton("Browse…")
+        btn_out.setMaximumWidth(80)
+        btn_out.clicked.connect(lambda: self._browse_save(self._gcd_out))
+        row_out = QHBoxLayout()
+        row_out.addWidget(self._gcd_out)
+        row_out.addWidget(btn_out)
+        form.addRow("Output file:", row_out)
+
+        self._gcd_cipher = QComboBox()
+        self._gcd_cipher.addItems(GHOST_CIPHERS)
+        form.addRow("Cipher:", self._gcd_cipher)
+
+        self._gcd_real_pass = QLineEdit()
+        self._gcd_real_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self._gcd_real_pass.setPlaceholderText("Real passphrase (guards the real content)")
+        form.addRow("Real passphrase:", self._gcd_real_pass)
+
+        self._gcd_decoy_pass = QLineEdit()
+        self._gcd_decoy_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self._gcd_decoy_pass.setPlaceholderText("Decoy passphrase (reveal this under coercion)")
+        form.addRow("Decoy passphrase:", self._gcd_decoy_pass)
+
+        open_note = QLabel("To open: fill Container + Output + one passphrase (real or decoy) — the tool finds the matching segment.")
+        open_note.setWordWrap(True)
+        open_note.setStyleSheet("color:#9CA3AF; font-size:10px;")
+        form.addRow("", open_note)
+
+        l.addLayout(form)
+
+        btns = QHBoxLayout()
+        self._gcd_btn_create = QPushButton("Create Deniable Container")
+        self._gcd_btn_create.setStyleSheet(
+            "background:#92400E; color:white; padding:8px; border-radius:6px; font-weight:bold;"
+        )
+        self._gcd_btn_create.setToolTip(
+            "Create a dual-layer deniable container from real + decoy files"
+        )
+        self._gcd_btn_create.clicked.connect(self._do_gcd_create)
+
+        self._gcd_btn_open = QPushButton("Open Deniable Container")
+        self._gcd_btn_open.setStyleSheet(
+            "background:#065F46; color:white; padding:8px; border-radius:6px; font-weight:bold;"
+        )
+        self._gcd_btn_open.setToolTip(
+            "Decrypt — provide real OR decoy passphrase; tool auto-detects the matching segment"
+        )
+        self._gcd_btn_open.clicked.connect(self._do_gcd_open)
+
+        btns.addWidget(self._gcd_btn_create)
+        btns.addWidget(self._gcd_btn_open)
+        l.addLayout(btns)
+
+        self._gcd_status = self.build_status_label()
+        l.addWidget(self._gcd_status)
+
+        _, self._gcd_out_text = self.build_output_area("Result")
+        l.addWidget(_, stretch=1)
         return w
 
     def _do_gc_create(self):
@@ -370,6 +501,58 @@ class SymmetricPanel(BasePanel):
                 details.append(f"Container: {r.parsed['container_size']} bytes")
             if details:
                 self._gc_out_text.append("\n" + "  ".join(details))
+
+    def _do_gcd_create(self):
+        real = self._gcd_real.text().strip()
+        decoy = self._gcd_decoy.text().strip()
+        container = self._gcd_container.text().strip()
+        cipher = self._gcd_cipher.currentText()
+        real_pass = self._gcd_real_pass.text()
+        decoy_pass = self._gcd_decoy_pass.text()
+        if not real or not decoy or not container or not real_pass or not decoy_pass:
+            self._gcd_status.setText("✗  Fill in real content, decoy content, container path, and both passphrases")
+            self._gcd_status.setStyleSheet("color: #F87171;")
+            return
+        self._gcd_btn_create.setEnabled(False)
+        self._gcd_status.setText("Creating deniable container (2 × Argon2id KDF — takes a moment)…")
+        self._gcd_status.setStyleSheet("color: #60A5FA;")
+        self.run_in_thread(
+            create_deniable_container, real, decoy, container, real_pass, decoy_pass, cipher,
+            callback=self._on_gcd_done,
+        )
+
+    def _do_gcd_open(self):
+        container = self._gcd_container.text().strip()
+        out = self._gcd_out.text().strip()
+        cipher = self._gcd_cipher.currentText()
+        # Accept either passphrase field (whichever is filled); real takes priority
+        passphrase = self._gcd_real_pass.text() or self._gcd_decoy_pass.text()
+        if not container or not out or not passphrase:
+            self._gcd_status.setText("✗  Fill in container, output, and at least one passphrase")
+            self._gcd_status.setStyleSheet("color: #F87171;")
+            return
+        self._gcd_btn_open.setEnabled(False)
+        self._gcd_status.setText("Opening deniable container (trying both segments)…")
+        self._gcd_status.setStyleSheet("color: #60A5FA;")
+        self.run_in_thread(
+            open_deniable_container, container, out, passphrase, cipher,
+            callback=self._on_gcd_done,
+        )
+
+    def _on_gcd_done(self, r):
+        self._gcd_btn_create.setEnabled(True)
+        self._gcd_btn_open.setEnabled(True)
+        self.show_result(r, self._gcd_out_text, self._gcd_status)
+        if r.success:
+            details = []
+            if "real_size" in r.parsed:
+                details.append(f"Real: {r.parsed['real_size']} B  Decoy: {r.parsed['decoy_size']} B")
+            if "plaintext_size" in r.parsed:
+                details.append(f"Decrypted: {r.parsed['plaintext_size']} bytes")
+            if "container_size" in r.parsed:
+                details.append(f"Container: {r.parsed['container_size']} bytes (2 × {r.parsed.get('segment_size', '?')} B segments)")
+            if details:
+                self._gcd_out_text.append("\n" + "\n".join(details))
 
     # ------------------------------------------------------------------
 

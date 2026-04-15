@@ -37,6 +37,8 @@ Thumbs.db
 *.p7s
 audit_log.json
 
-# AppImage build artifacts
+# AppImage build artifacts (dist/AppDir/ is generated; packaging/AppDir/ is source)
 *.AppImage
 AppDir/
+!sslopencrypt/packaging/AppDir/
+!sslopencrypt/packaging/AppDir/**

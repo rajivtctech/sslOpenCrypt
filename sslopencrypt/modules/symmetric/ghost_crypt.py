@@ -251,6 +251,302 @@ def open_container(
         return ExecutionResult([], cmd_str, "", err, {}, False, -1)
 
 
+# ---------------------------------------------------------------------------
+# Ghost Crypt v1.2 — dual-layer deniable container
+# ---------------------------------------------------------------------------
+
+DENIABLE_CAP_ALIGN = 64   # capacity rounded up to this boundary (bytes)
+DENIABLE_LEN_PREFIX = 4   # bytes reserved at the head of each segment for content length
+
+
+def _deniable_capacity(real_size: int, decoy_size: int) -> int:
+    """Return per-segment capacity (content area) for a deniable container."""
+    raw = max(real_size, decoy_size) + DENIABLE_LEN_PREFIX
+    return ((raw + DENIABLE_CAP_ALIGN - 1) // DENIABLE_CAP_ALIGN) * DENIABLE_CAP_ALIGN
+
+
+def _encode_deniable_plaintext(plaintext: bytes, capacity: int) -> bytes:
+    """
+    Encode plaintext for a deniable segment:
+      [4-byte length big-endian] [plaintext] [random padding to capacity]
+    """
+    usable = capacity - DENIABLE_LEN_PREFIX
+    if len(plaintext) > usable:
+        raise ValueError(f"Plaintext ({len(plaintext)} B) exceeds usable capacity ({usable} B)")
+    length_prefix = len(plaintext).to_bytes(DENIABLE_LEN_PREFIX, "big")
+    padding = os.urandom(usable - len(plaintext))
+    return length_prefix + plaintext + padding
+
+
+def _decode_deniable_plaintext(padded: bytes) -> bytes:
+    """Extract the original plaintext from a decoded (length-prefixed + padded) block."""
+    length = int.from_bytes(padded[:DENIABLE_LEN_PREFIX], "big")
+    return padded[DENIABLE_LEN_PREFIX : DENIABLE_LEN_PREFIX + length]
+
+
+def _make_deniable_segment(plaintext: bytes, capacity: int, passphrase: str, cipher: str) -> bytes:
+    """Encrypt plaintext into a fixed-capacity deniable segment."""
+    salt = os.urandom(GHOST_SALT_LEN)
+    nonce = os.urandom(GHOST_NONCE_LEN)
+    key = _derive_key(passphrase, salt)
+    padded = _encode_deniable_plaintext(plaintext, capacity)
+    ciphertext_tag = _aead_encrypt(key, nonce, padded, cipher)
+    return salt + nonce + ciphertext_tag  # total = CAPACITY + GHOST_OVERHEAD
+
+
+def _open_deniable_segment(segment: bytes, passphrase: str, cipher: str) -> bytes | None:
+    """
+    Try to decrypt one segment of a deniable container.
+    Returns the original plaintext bytes on success, None on authentication failure.
+    """
+    if len(segment) < GHOST_OVERHEAD:
+        return None
+    salt = segment[:GHOST_SALT_LEN]
+    nonce = segment[GHOST_SALT_LEN : GHOST_SALT_LEN + GHOST_NONCE_LEN]
+    ciphertext_tag = segment[GHOST_SALT_LEN + GHOST_NONCE_LEN :]
+    try:
+        key = _derive_key(passphrase, salt)
+        padded = _aead_decrypt(key, nonce, ciphertext_tag, cipher)
+        return _decode_deniable_plaintext(padded)
+    except Exception:
+        return None
+
+
+def _deniable_console_cmd(cipher: str) -> str:
+    return (
+        "# Ghost Crypt v1.2 — dual-layer deniable container\n"
+        "# Layout: segment_0 (real, passphrase A) || segment_1 (decoy, passphrase B)\n"
+        "# Each segment: salt(32) + nonce(12) + AEAD_encrypt(4-byte-len || content || pad) + tag(16)\n"
+        f"# Cipher: {cipher}  |  KDF: Argon2id t=3 m=64MiB p=4\n"
+        "# Under coercion: reveal the DECOY passphrase only."
+    )
+
+
+def create_deniable_container(
+    real_path: str,
+    decoy_path: str,
+    output_path: str,
+    real_passphrase: str,
+    decoy_passphrase: str,
+    cipher: str = "AES-256-GCM",
+) -> ExecutionResult:
+    """
+    Create a Ghost Crypt v1.2 dual-layer deniable container.
+
+    The container holds two independently encrypted payloads in a fixed-capacity
+    binary blob that carries no magic bytes, headers, or layer count.
+
+      - Segment 0 encrypts the REAL content  (real_passphrase)
+      - Segment 1 encrypts the DECOY content (decoy_passphrase)
+
+    Under coercion, reveal only the decoy passphrase.  The opener will
+    successfully decrypt the decoy content from segment 1.  The existence of
+    a second payload cannot be cryptographically proven without the real passphrase.
+
+    Binary layout (no magic, no header):
+      Bytes [0,            SEGMENT_SIZE)  : segment_0 — real content
+      Bytes [SEGMENT_SIZE, 2*SEGMENT_SIZE): segment_1 — decoy content
+
+      SEGMENT_SIZE = CAPACITY + GHOST_OVERHEAD (60)
+      CAPACITY     = ceil((max(real_size, decoy_size) + 4) / 64) × 64
+
+      Each segment: salt(32) + nonce(12) + AEAD_encrypt(4-byte-len || content || pad) + tag(16)
+    """
+    cmd_str = _deniable_console_cmd(cipher)
+
+    if cipher not in SUPPORTED_CIPHERS:
+        return ExecutionResult([], cmd_str, "", f"Unsupported cipher: {cipher}", {}, False, -1)
+
+    try:
+        real_bytes = Path(real_path).read_bytes()
+    except OSError as e:
+        return ExecutionResult([], cmd_str, "", f"Cannot read real content: {e}", {}, False, -1)
+
+    try:
+        decoy_bytes = Path(decoy_path).read_bytes()
+    except OSError as e:
+        return ExecutionResult([], cmd_str, "", f"Cannot read decoy content: {e}", {}, False, -1)
+
+    try:
+        capacity = _deniable_capacity(len(real_bytes), len(decoy_bytes))
+        segment_0 = _make_deniable_segment(real_bytes, capacity, real_passphrase, cipher)
+        segment_1 = _make_deniable_segment(decoy_bytes, capacity, decoy_passphrase, cipher)
+        container = segment_0 + segment_1
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(container)
+        os.chmod(output_path, 0o600)
+
+        segment_size = capacity + GHOST_OVERHEAD
+        parsed = {
+            "cipher": cipher,
+            "real_size": len(real_bytes),
+            "decoy_size": len(decoy_bytes),
+            "capacity": capacity,
+            "segment_size": segment_size,
+            "container_size": len(container),
+            "version": "1.2",
+        }
+        log_operation("ghost_crypt", f"deniable_create:{cipher}", cmd_str, True)
+        return ExecutionResult(
+            [], cmd_str,
+            f"Deniable container created ({len(container)} bytes, 2 × {segment_size}B segments)",
+            "", parsed, True, 0,
+        )
+
+    except ImportError as e:
+        return ExecutionResult([], cmd_str, "", f"Missing dependency: {e}. Install: pip install cryptography argon2-cffi", {}, False, -1)
+    except Exception as e:
+        log_operation("ghost_crypt", f"deniable_create:{cipher}", cmd_str, False)
+        return ExecutionResult([], cmd_str, "", str(e), {}, False, -1)
+
+
+def open_deniable_container(
+    input_path: str,
+    output_path: str,
+    passphrase: str,
+    cipher: str = "AES-256-GCM",
+) -> ExecutionResult:
+    """
+    Open a Ghost Crypt v1.2 deniable container.
+
+    Tries both segments with the given passphrase and returns whichever
+    authenticates successfully.  The caller does not need to know (and should
+    not know) which segment holds the real vs. decoy content.
+    """
+    cmd_str = (
+        "# Ghost Crypt v1.2 — open deniable container\n"
+        f"# Tries both segments; returns whichever the passphrase decrypts ({cipher})"
+    )
+
+    if cipher not in SUPPORTED_CIPHERS:
+        return ExecutionResult([], cmd_str, "", f"Unsupported cipher: {cipher}", {}, False, -1)
+
+    try:
+        data = Path(input_path).read_bytes()
+    except OSError as e:
+        return ExecutionResult([], cmd_str, "", f"Cannot read container: {e}", {}, False, -1)
+
+    if len(data) < 2 * GHOST_OVERHEAD or len(data) % 2 != 0:
+        return ExecutionResult(
+            [], cmd_str, "",
+            f"Not a valid deniable container (size {len(data)} B; expected even size ≥ {2 * GHOST_OVERHEAD})",
+            {}, False, -1,
+        )
+
+    try:
+        segment_size = len(data) // 2
+        plaintext = _open_deniable_segment(data[:segment_size], passphrase, cipher)
+        segment_used = 0
+        if plaintext is None:
+            plaintext = _open_deniable_segment(data[segment_size:], passphrase, cipher)
+            segment_used = 1
+
+        if plaintext is None:
+            return ExecutionResult(
+                [], cmd_str, "",
+                "Authentication failed — wrong passphrase or not a deniable container",
+                {}, False, -1,
+            )
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(plaintext)
+        os.chmod(output_path, 0o600)
+
+        parsed = {
+            "cipher": cipher,
+            "plaintext_size": len(plaintext),
+            "container_size": len(data),
+            "segment_used": segment_used,
+            "version": "1.2",
+        }
+        log_operation("ghost_crypt", f"deniable_open:{cipher}", cmd_str, True)
+        return ExecutionResult([], cmd_str, f"Decrypted ({len(plaintext)} bytes)", "", parsed, True, 0)
+
+    except ImportError as e:
+        return ExecutionResult([], cmd_str, "", f"Missing dependency: {e}. Install: pip install cryptography argon2-cffi", {}, False, -1)
+    except Exception as e:
+        log_operation("ghost_crypt", f"deniable_open:{cipher}", cmd_str, False)
+        return ExecutionResult([], cmd_str, "", str(e), {}, False, -1)
+
+
+def create_deniable_from_bytes(
+    real_bytes: bytes,
+    decoy_bytes: bytes,
+    real_passphrase: str,
+    decoy_passphrase: str,
+    cipher: str = "AES-256-GCM",
+) -> ExecutionResult:
+    """Create a deniable container from raw bytes. Returns container bytes in parsed['container_bytes']."""
+    cmd_str = _deniable_console_cmd(cipher)
+
+    if cipher not in SUPPORTED_CIPHERS:
+        return ExecutionResult([], cmd_str, "", f"Unsupported cipher: {cipher}", {}, False, -1)
+
+    try:
+        capacity = _deniable_capacity(len(real_bytes), len(decoy_bytes))
+        segment_0 = _make_deniable_segment(real_bytes, capacity, real_passphrase, cipher)
+        segment_1 = _make_deniable_segment(decoy_bytes, capacity, decoy_passphrase, cipher)
+        container = segment_0 + segment_1
+
+        parsed = {
+            "container_bytes": container,
+            "cipher": cipher,
+            "capacity": capacity,
+            "segment_size": capacity + GHOST_OVERHEAD,
+            "container_size": len(container),
+            "version": "1.2",
+        }
+        log_operation("ghost_crypt", f"deniable_create_bytes:{cipher}", cmd_str, True)
+        return ExecutionResult([], cmd_str, f"Deniable container: {len(container)} bytes", "", parsed, True, 0)
+
+    except Exception as e:
+        return ExecutionResult([], cmd_str, "", str(e), {}, False, -1)
+
+
+def open_deniable_from_bytes(
+    container: bytes,
+    passphrase: str,
+    cipher: str = "AES-256-GCM",
+) -> ExecutionResult:
+    """Open a deniable container from raw bytes. Returns plaintext in parsed['plaintext_bytes']."""
+    cmd_str = (
+        f"# Ghost Crypt v1.2 — open deniable container from bytes ({cipher})"
+    )
+
+    if cipher not in SUPPORTED_CIPHERS:
+        return ExecutionResult([], cmd_str, "", f"Unsupported cipher: {cipher}", {}, False, -1)
+
+    if len(container) < 2 * GHOST_OVERHEAD or len(container) % 2 != 0:
+        return ExecutionResult(
+            [], cmd_str, "",
+            f"Not a valid deniable container (size {len(container)} B; expected even size ≥ {2 * GHOST_OVERHEAD})",
+            {}, False, -1,
+        )
+
+    try:
+        segment_size = len(container) // 2
+        plaintext = _open_deniable_segment(container[:segment_size], passphrase, cipher)
+        if plaintext is None:
+            plaintext = _open_deniable_segment(container[segment_size:], passphrase, cipher)
+        if plaintext is None:
+            return ExecutionResult(
+                [], cmd_str, "",
+                "Authentication failed — wrong passphrase or not a deniable container",
+                {}, False, -1,
+            )
+
+        log_operation("ghost_crypt", f"deniable_open_bytes:{cipher}", cmd_str, True)
+        return ExecutionResult(
+            [], cmd_str, f"Decrypted: {len(plaintext)} bytes", "",
+            {"plaintext_bytes": plaintext, "plaintext_size": len(plaintext), "version": "1.2"},
+            True, 0,
+        )
+
+    except Exception as e:
+        return ExecutionResult([], cmd_str, "", str(e), {}, False, -1)
+
+
 def create_container_from_bytes(
     plaintext: bytes,
     passphrase: str,
