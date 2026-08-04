@@ -133,12 +133,21 @@ git push origin v1.X.Y
 - Spec uses PyInstaller `--onefile` for Windows.
 - SmartScreen warns on first run (unsigned binary) — click "More info → Run anyway".
 - Built by CI on `windows-latest`.
-- **OpenSSL is bundled — end users install nothing.** CI (`choco install openssl`,
-  version pinned via the `OPENSSL_VERSION` env var in the workflow) stages
-  `openssl.exe` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll` + `legacy.dll` into
+- **OpenSSL is bundled — end users install nothing.** CI installs
+  `mingw-w64-x86_64-openssl` via `msys2/setup-msys2`, stages `openssl.exe` plus
+  its full `ldd` DLL closure and `legacy.dll` into
   `sslopencrypt/packaging/openssl-win64/`, writes `openssl_manifest.json`
   (SHA-256 per file), and the spec adds them to the bundle root. That directory
   is gitignored — it exists only during a build.
+- **Do not switch back to `choco install openssl`.** That package is a wrapper
+  that downloads the installer from slproweb.com at install time, and slproweb
+  hosts only the current release — a pinned version 404s the moment upstream
+  moves (observed 2026-08-04 with 3.5.4), and unpinned means the shipped bytes
+  change without notice. MSYS2 packages are archived, and MINGW64 produces a
+  native PE build; the MSYS-runtime build would mangle Windows paths.
+- The DLL list is resolved with `ldd`, not hardcoded — the mingw build pulls in
+  libgcc / libwinpthread / zlib alongside libcrypto and libssl, and that set
+  changes between package versions.
 - `core/executor.py` prefers the bundled binary over `PATH`, verifies its SHA-256
   against the manifest before first use, and sets `OPENSSL_MODULES` (plus
   `OPENSSL_CONF` when a config ships) so the compiled-in `OPENSSLDIR` from the

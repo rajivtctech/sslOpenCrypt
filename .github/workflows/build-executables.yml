@@ -13,9 +13,6 @@ on:
 # from actions/checkout, actions/setup-python, actions/cache.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # OpenSSL bundled into the Windows build. Pinned so the shipped binary is
-  # reproducible and its recorded SHA-256 is meaningful. Must stay on 3.x.
-  OPENSSL_VERSION: '3.5.4'
 
 jobs:
   build:
@@ -111,36 +108,70 @@ jobs:
       # Pin 3.x deliberately: OpenSSL 1.x used the old SSLeay licence, which
       # is NOT GPL-compatible and must never be bundled here.
       # -------------------------------------------------------------------
-      - name: Install OpenSSL (Windows)
+      # MSYS2's mingw-w64 package, not Chocolatey. The choco `openssl` package
+      # is a thin wrapper that downloads the installer from slproweb.com at
+      # install time, and slproweb only hosts the current release — so any
+      # pinned version 404s as soon as upstream moves, and the bytes we ship
+      # would change without notice. MSYS2 packages are archived and the build
+      # is native PE (not an MSYS runtime build, which mangles Windows paths).
+      - name: Set up MSYS2 with OpenSSL (Windows)
         if: runner.os == 'Windows'
-        run: choco install openssl --version=${{ env.OPENSSL_VERSION }} --yes --no-progress
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-openssl
 
       - name: Stage bundled OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          dest="sslopencrypt/packaging/openssl-win64"
+          mkdir -p "$dest"
+
+          /mingw64/bin/openssl.exe version
+          /mingw64/bin/openssl.exe version | grep -q '^OpenSSL 3\.' || {
+            echo "ERROR: expected OpenSSL 3.x — 1.x is not GPL-compatible and 4.x is untested here"
+            exit 1
+          }
+
+          cp /mingw64/bin/openssl.exe "$dest/"
+
+          # Resolve the DLL closure rather than hardcoding names: the mingw
+          # build pulls in libgcc/libwinpthread/zlib alongside libcrypto and
+          # libssl, and that set changes between package versions.
+          ldd /mingw64/bin/openssl.exe \
+            | awk '$3 ~ /mingw64/ {print $3}' \
+            | while read -r dll; do cp "$dll" "$dest/"; done
+
+          # legacy.dll carries single-DES, RC2, RC4, Blowfish, CAST and MD4.
+          # Shipped so those stay reachable via -provider legacy; nothing
+          # activates it by default, matching Linux/macOS behaviour.
+          if [ -f /mingw64/lib/ossl-modules/legacy.dll ]; then
+            cp /mingw64/lib/ossl-modules/legacy.dll "$dest/"
+          fi
+
+          # Apache-2.0 requires the licence text to travel with the binaries.
+          for lic in /mingw64/share/licenses/openssl/LICENSE.txt \
+                     /mingw64/share/licenses/openssl/LICENSE; do
+            [ -f "$lic" ] && cp "$lic" "$dest/OPENSSL-LICENSE.txt" && break
+          done
+
+          ls -l "$dest"
+
+      - name: Record OpenSSL manifest (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $dest = "sslopencrypt/packaging/openssl-win64"
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-          $bin = "C:/Program Files/OpenSSL-Win64/bin"
-          if (!(Test-Path "$bin/openssl.exe")) { Write-Error "openssl.exe not found under $bin"; exit 1 }
+          if (!(Test-Path "$dest/openssl.exe")) { Write-Error "staging produced no openssl.exe"; exit 1 }
 
-          Copy-Item "$bin/openssl.exe"            -Destination $dest
-          Copy-Item "$bin/libcrypto-3-x64.dll"    -Destination $dest
-          Copy-Item "$bin/libssl-3-x64.dll"       -Destination $dest
-
-          # legacy.dll carries single-DES, RC2, RC4, Blowfish, CAST and MD4.
-          # Shipped so those remain reachable via -provider legacy; nothing
-          # activates it by default, matching Linux/macOS behaviour.
-          if (Test-Path "$bin/legacy.dll") { Copy-Item "$bin/legacy.dll" -Destination $dest }
-
-          # Apache-2.0 requires the licence text to travel with the binaries.
-          $lic = "C:/Program Files/OpenSSL-Win64/LICENSE.txt"
-          if (Test-Path $lic) { Copy-Item $lic -Destination "$dest/OPENSSL-LICENSE.txt" }
-
-          # Record SHA-256 of every staged file. core/executor.py re-checks
-          # these at runtime and refuses to run openssl on a mismatch.
+          # SHA-256 of every staged file. core/executor.py re-checks these at
+          # runtime and refuses to run a bundled openssl that does not match.
           $manifest = @{}
           Get-ChildItem $dest -File | ForEach-Object {
             $manifest[$_.Name] = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
@@ -148,7 +179,6 @@ jobs:
           $manifest | ConvertTo-Json | Set-Content "$dest/openssl_manifest.json" -Encoding utf8
 
           Get-Content "$dest/openssl_manifest.json"
-          Get-ChildItem $dest | Format-Table Name, Length
 
       # Linux: build_appimage.sh runs PyInstaller (onedir) then wraps the
       # output into a self-contained AppImage using appimagetool.
