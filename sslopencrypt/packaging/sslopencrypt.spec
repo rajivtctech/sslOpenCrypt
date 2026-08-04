@@ -41,6 +41,21 @@ else:
 block_cipher = None
 
 # ---------------------------------------------------------------------------
+# UPX is off everywhere, deliberately.
+#
+# It is the single biggest antivirus false-positive trigger for unsigned
+# PyInstaller executables, and this is an unsigned crypto tool handed out on
+# pendrives — being quarantined by Defender costs far more than the ~25 MB it
+# saves. It also breaks the binary under Wine: a UPX-packed python312.dll
+# fails DllMain with "DLL initialisation failed", while the identical
+# unpacked DLL runs (verified 2026-08-04 against the v1.2.2 release).
+#
+# CI still installs UPX; leaving it available costs nothing and keeps the door
+# open for a one-off experiment.
+# ---------------------------------------------------------------------------
+USE_UPX = False
+
+# ---------------------------------------------------------------------------
 # Bundled OpenSSL (Windows only)
 #
 # Everything in packaging/openssl-win64/ is placed at the root of the bundle,
@@ -216,7 +231,7 @@ if sys.platform in ('win32', 'darwin'):
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
-        upx=True,
+        upx=USE_UPX,
         upx_exclude=UPX_EXCLUDE,
         runtime_tmpdir=None,
         # console=True keeps CLI mode working on all platforms.
@@ -252,7 +267,7 @@ else:
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
-        upx=True,
+        upx=USE_UPX,
         upx_exclude=[],
         runtime_tmpdir=None,
         console=True,
@@ -270,7 +285,7 @@ else:
         a.zipfiles,
         a.datas,
         strip=False,
-        upx=True,
+        upx=USE_UPX,
         upx_exclude=[],
         name=EXE_NAME,        # output directory: dist/sslOpenCrypt-Linux/
     )
