@@ -32,7 +32,26 @@ cd "$PROJECT_DIR"
 # Step 1 — PyInstaller one-directory build
 # ---------------------------------------------------------------------------
 echo ">>> [1/4] Running PyInstaller (one-dir mode for Linux)…"
-python3 -m PyInstaller packaging/sslopencrypt.spec --noconfirm
+
+# Prefer the project venv when it exists — that is where a local checkout has
+# PyInstaller installed. CI installs into the runner's python3 and has no venv,
+# so it falls through to the second branch. Override with PYTHON=… if needed.
+if [[ -z "${PYTHON:-}" ]]; then
+    if [[ -x "${PROJECT_DIR}/.venv/bin/python" ]]; then
+        PYTHON="${PROJECT_DIR}/.venv/bin/python"
+    else
+        PYTHON="python3"
+    fi
+fi
+echo "    Using interpreter: $PYTHON"
+
+if ! "$PYTHON" -m PyInstaller --version >/dev/null 2>&1; then
+    echo "ERROR: PyInstaller is not available to $PYTHON"
+    echo "       Install it with: $PYTHON -m pip install pyinstaller"
+    exit 1
+fi
+
+"$PYTHON" -m PyInstaller packaging/sslopencrypt.spec --noconfirm
 
 if [[ ! -d "$PYINSTALLER_DIST" ]]; then
     echo "ERROR: PyInstaller output not found at $PYINSTALLER_DIST"

@@ -13,9 +13,16 @@
 #   macOS   : pyinstaller packaging/sslopencrypt.spec
 #   Windows : pyinstaller packaging/sslopencrypt.spec
 #
-# NOTE: openssl and gpg are system binaries invoked via subprocess — they are NOT
-# bundled. Users must have OpenSSL and (optionally) GnuPG installed on their system.
+# NOTE: gpg is a system binary invoked via subprocess and is NOT bundled — GnuPG
+# features degrade gracefully when it is absent.
+#
+# openssl IS bundled on Windows, where installing OpenSSL by hand is a poor
+# first-run experience. CI stages openssl.exe and its DLLs into
+# packaging/openssl-win64/ together with openssl_manifest.json (SHA-256 of each
+# file, checked at runtime by core/executor.py). Linux and macOS continue to use
+# the system openssl, which those platforms ship or install trivially.
 
+import glob
 import os
 import sys
 
@@ -32,6 +39,39 @@ else:
     EXE_NAME = 'sslOpenCrypt-Linux'
 
 block_cipher = None
+
+# ---------------------------------------------------------------------------
+# Bundled OpenSSL (Windows only)
+#
+# Everything in packaging/openssl-win64/ is placed at the root of the bundle,
+# which is where core/executor.py looks (sys._MEIPASS). Keeping openssl.exe and
+# its DLLs in the same directory is what makes DLL resolution work without
+# touching PATH.
+#
+# These go in `binaries` rather than `datas` so PyInstaller marks them
+# executable and does not rewrite them.
+# ---------------------------------------------------------------------------
+bundled_binaries = []
+bundled_datas = []
+UPX_EXCLUDE = []
+
+if sys.platform == 'win32':
+    OPENSSL_DIR = os.path.join(SPECPATH, 'openssl-win64')
+    if not os.path.isdir(OPENSSL_DIR):
+        raise SystemExit(
+            f"ERROR: {OPENSSL_DIR} is missing.\n"
+            "The Windows build bundles OpenSSL. Run the 'Stage bundled OpenSSL'\n"
+            "step from .github/workflows/build-executables.yml before PyInstaller."
+        )
+    for path in sorted(glob.glob(os.path.join(OPENSSL_DIR, '*'))):
+        name = os.path.basename(path)
+        if name.lower().endswith(('.exe', '.dll')):
+            bundled_binaries.append((path, '.'))
+            # UPX-packing openssl.exe / libcrypto is a well-known trigger for
+            # antivirus false positives and can corrupt the binary outright.
+            UPX_EXCLUDE.append(name)
+        else:
+            bundled_datas.append((path, '.'))
 
 hidden_imports = [
     # Core
@@ -136,8 +176,8 @@ hidden_imports = [
 a = Analysis(
     [MAIN_SCRIPT],
     pathex=[APP_ROOT],
-    binaries=[],
-    datas=[],
+    binaries=bundled_binaries,
+    datas=bundled_datas,
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
@@ -177,7 +217,7 @@ if sys.platform in ('win32', 'darwin'):
         bootloader_ignore_signals=False,
         strip=False,
         upx=True,
-        upx_exclude=[],
+        upx_exclude=UPX_EXCLUDE,
         runtime_tmpdir=None,
         # console=True keeps CLI mode working on all platforms.
         # On Windows this means a console window appears briefly when launching
@@ -204,6 +244,10 @@ else:
         pyz,
         a.scripts,
         [],                   # binaries/datas go into COLLECT, not into the EXE
+        # Required for onedir. Without it PyInstaller 6.x builds a onefile-style
+        # executable at dist/<name>, which then collides with the directory
+        # COLLECT wants to create there ("Resource ... is not a valid file!").
+        exclude_binaries=True,
         name=EXE_NAME,
         debug=False,
         bootloader_ignore_signals=False,

@@ -13,6 +13,9 @@ on:
 # from actions/checkout, actions/setup-python, actions/cache.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # OpenSSL bundled into the Windows build. Pinned so the shipped binary is
+  # reproducible and its recorded SHA-256 is meaningful. Must stay on 3.x.
+  OPENSSL_VERSION: '3.5.4'
 
 jobs:
   build:
@@ -98,6 +101,55 @@ jobs:
           pip show pyinstaller pyhanko cryptography argon2-cffi PyQt6 | grep -E "^(Name|Version)"
         shell: bash
 
+      # -------------------------------------------------------------------
+      # Windows ships its own OpenSSL. Installing OpenSSL on Windows by hand
+      # is the single worst part of the first-run experience, so the binary
+      # and its DLLs are staged here and bundled by PyInstaller.
+      #
+      # OpenSSL 3.x is Apache-2.0 — compatible with sslOpenCrypt's GPL v3 —
+      # and is invoked as a separate process, so this is mere aggregation.
+      # Pin 3.x deliberately: OpenSSL 1.x used the old SSLeay licence, which
+      # is NOT GPL-compatible and must never be bundled here.
+      # -------------------------------------------------------------------
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        run: choco install openssl --version=${{ env.OPENSSL_VERSION }} --yes --no-progress
+
+      - name: Stage bundled OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = "sslopencrypt/packaging/openssl-win64"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
+          $bin = "C:/Program Files/OpenSSL-Win64/bin"
+          if (!(Test-Path "$bin/openssl.exe")) { Write-Error "openssl.exe not found under $bin"; exit 1 }
+
+          Copy-Item "$bin/openssl.exe"            -Destination $dest
+          Copy-Item "$bin/libcrypto-3-x64.dll"    -Destination $dest
+          Copy-Item "$bin/libssl-3-x64.dll"       -Destination $dest
+
+          # legacy.dll carries single-DES, RC2, RC4, Blowfish, CAST and MD4.
+          # Shipped so those remain reachable via -provider legacy; nothing
+          # activates it by default, matching Linux/macOS behaviour.
+          if (Test-Path "$bin/legacy.dll") { Copy-Item "$bin/legacy.dll" -Destination $dest }
+
+          # Apache-2.0 requires the licence text to travel with the binaries.
+          $lic = "C:/Program Files/OpenSSL-Win64/LICENSE.txt"
+          if (Test-Path $lic) { Copy-Item $lic -Destination "$dest/OPENSSL-LICENSE.txt" }
+
+          # Record SHA-256 of every staged file. core/executor.py re-checks
+          # these at runtime and refuses to run openssl on a mismatch.
+          $manifest = @{}
+          Get-ChildItem $dest -File | ForEach-Object {
+            $manifest[$_.Name] = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+          }
+          $manifest | ConvertTo-Json | Set-Content "$dest/openssl_manifest.json" -Encoding utf8
+
+          Get-Content "$dest/openssl_manifest.json"
+          Get-ChildItem $dest | Format-Table Name, Length
+
       # Linux: build_appimage.sh runs PyInstaller (onedir) then wraps the
       # output into a self-contained AppImage using appimagetool.
       # macOS / Windows: standard PyInstaller onefile build.
@@ -133,11 +185,39 @@ jobs:
       - name: Verify build output (Windows)
         if: runner.os == 'Windows'
         working-directory: sslopencrypt/dist
+        shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           dir
           if (!(Test-Path "${{ matrix.asset_name }}")) { Write-Error "ERROR: expected binary not found"; exit 1 }
           $size = (Get-Item "${{ matrix.asset_name }}").length / 1MB
           Write-Host ("Binary size: {0:N1} MB" -f $size)
+
+      # The runners already have openssl on PATH (Git for Windows, Strawberry
+      # Perl), so "an openssl command worked" proves nothing about the bundle.
+      # PATH is stripped to the bare system directories first: if the bundled
+      # copy were missing, resolution now has nothing to fall back to.
+      - name: Verify bundled OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        working-directory: sslopencrypt/dist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "C:\Windows\system32;C:\Windows"
+          if (Get-Command openssl -ErrorAction SilentlyContinue) {
+            Write-Error "PATH scrub failed — openssl is still reachable, the test would be meaningless"
+            exit 1
+          }
+
+          $raw = & "./${{ matrix.asset_name }}" --cli --mode version --pretty 2>&1 | Out-String
+          Write-Host $raw
+          $info = $raw | ConvertFrom-Json
+
+          if (-not $info.success)        { Write-Error "openssl did not resolve inside the bundle: $($info.error)"; exit 1 }
+          if (-not $info.openssl_bundled){ Write-Error "resolved openssl is NOT the bundled one: $($info.openssl_path)"; exit 1 }
+          if ($info.version -notmatch '^OpenSSL 3\.') { Write-Error "expected OpenSSL 3.x, got: $($info.version)"; exit 1 }
+
+          Write-Host "OK — bundled $($info.version) at $($info.openssl_path)"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -208,13 +288,26 @@ jobs:
 
             ### System requirements
 
-            OpenSSL and (optionally) GnuPG must be installed on the host — they are **not bundled**.
+            **Windows needs nothing installed.** OpenSSL 3.x ships inside
+            `sslOpenCrypt-Windows.exe`; the app uses its own copy in preference to
+            anything on `PATH`, and checks its SHA-256 before running it.
 
-            | OS | Install |
-            |---|---|
-            | Ubuntu / Debian | `sudo apt install openssl gnupg` |
-            | macOS | `brew install openssl gnupg` |
-            | Windows | [Win64 OpenSSL](https://slproweb.com/products/Win32OpenSSL.html) + [Gpg4win](https://gpg4win.org) |
+            | OS | OpenSSL | GnuPG (optional) |
+            |---|---|---|
+            | Windows | bundled — nothing to install | [Gpg4win](https://gpg4win.org) |
+            | Ubuntu / Debian | `sudo apt install openssl` | `sudo apt install gnupg` |
+            | macOS | preinstalled, or `brew install openssl` | `brew install gnupg` |
+
+            GnuPG is not bundled on any platform — the GPG panel is disabled when it is absent
+            and everything else works normally.
+
+            To confirm which OpenSSL is in use:
+            ```
+            sslOpenCrypt-Windows.exe --cli --mode version --pretty
+            ```
+
+            > Bundled OpenSSL is © The OpenSSL Project, licensed Apache-2.0; the licence text
+            > travels inside the executable. sslOpenCrypt itself remains GPL v3.
 
             > **India DSC note:** On-token PKCS#11 signing and PAdES PDF signing require the vendor USB token driver (libcastle.so / libeToken.so on Linux, equivalent on macOS/Windows). These are not bundled and must be installed separately from the token manufacturer.
           files: |

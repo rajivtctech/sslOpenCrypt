@@ -136,9 +136,23 @@ def cmd_random(args) -> dict:
 
 
 def cmd_version(args) -> dict:
-    from core.executor import openssl_version
-    ver = openssl_version()
-    return {"success": True, "version": ver}
+    """Report the openssl actually in use.
+
+    Also used as the packaging smoke test: CI asserts openssl_bundled is true
+    on Windows, since a PATH lookup would otherwise silently succeed against
+    some unrelated openssl and hide a broken bundle.
+    """
+    from core.executor import get_openssl_path, openssl_is_bundled, openssl_version
+    try:
+        path = get_openssl_path()
+    except (FileNotFoundError, RuntimeError) as exc:
+        return {"success": False, "error": str(exc)}
+    return {
+        "success": True,
+        "version": openssl_version(),
+        "openssl_path": path,
+        "openssl_bundled": openssl_is_bundled(),
+    }
 
 
 COMMANDS = {
@@ -191,7 +205,13 @@ Examples:
 
     args = parser.parse_args()
     handler = COMMANDS[args.mode]
-    result = handler(args)
+    try:
+        result = handler(args)
+    except (FileNotFoundError, RuntimeError) as exc:
+        # openssl could not be resolved, or a bundled copy failed its integrity
+        # check. Report it as JSON like every other failure — a traceback here
+        # is unparseable by whatever is driving the CLI.
+        result = {"success": False, "error": str(exc)}
 
     indent = 2 if args.pretty else None
     print(json.dumps(result, indent=indent, ensure_ascii=False))

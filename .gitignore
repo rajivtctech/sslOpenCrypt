@@ -37,6 +37,9 @@ Thumbs.db
 *.p7s
 audit_log.json
 
+# OpenSSL staged by CI into the Windows build — downloaded at build time, never committed
+sslopencrypt/packaging/openssl-win64/
+
 # AppImage build artifacts (dist/AppDir/ is generated; packaging/AppDir/ is source)
 *.AppImage
 AppDir/

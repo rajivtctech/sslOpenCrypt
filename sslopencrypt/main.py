@@ -33,6 +33,22 @@ def main():
             )
             sys.exit(1)
 
+        # Resolve openssl before the window appears. This is what makes the
+        # bundled-binary hash check a startup check rather than a surprise
+        # traceback the first time a user clicks something. Missing openssl is
+        # not fatal — panels report it per-operation — but a bundled binary
+        # that fails its integrity check is.
+        from core.executor import get_openssl_path
+        try:
+            get_openssl_path()
+        except FileNotFoundError:
+            pass
+        except RuntimeError as exc:
+            app = QApplication(sys.argv)
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(None, "sslOpenCrypt — integrity check failed", str(exc))
+            sys.exit(1)
+
         from ui.main_window import run_app
         sys.exit(run_app())
 

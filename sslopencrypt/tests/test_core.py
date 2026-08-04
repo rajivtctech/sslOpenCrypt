@@ -16,6 +16,85 @@ from core.result import ExecutionResult, DEPRECATED_ALGORITHMS
 from core.tempfile_manager import SecureTempFile, secure_temp_file
 
 
+class TestBundledOpenSSL:
+    """The Windows build ships its own openssl (packaging/sslopencrypt.spec).
+
+    These run on every platform: the machinery is platform-independent, and
+    the code paths that matter cannot be exercised on the CI runner that
+    actually produces the Windows binary.
+    """
+
+    def test_bundle_dir_is_none_when_running_from_source(self):
+        from core.executor import bundle_dir
+        assert bundle_dir() is None
+
+    def test_not_bundled_when_running_from_source(self):
+        from core.executor import openssl_is_bundled
+        assert openssl_is_bundled() is False
+
+    def test_no_env_overrides_when_running_from_source(self):
+        """OPENSSL_CONF/OPENSSL_MODULES must never leak into a system openssl."""
+        from core.executor import _bundled_openssl_env
+        assert _bundled_openssl_env() == {}
+
+    def test_missing_manifest_is_tolerated(self, monkeypatch, tmp_path):
+        """Builds predating the manifest must still run."""
+        import core.executor as ex
+        monkeypatch.setattr(ex, "bundle_dir", lambda: str(tmp_path))
+        binary = tmp_path / "openssl"
+        binary.write_bytes(b"not really openssl")
+        ex._verify_bundled_binary(str(binary))  # no manifest present — must not raise
+
+    def test_matching_hash_passes(self, monkeypatch, tmp_path):
+        import core.executor as ex
+        import hashlib, json
+        monkeypatch.setattr(ex, "bundle_dir", lambda: str(tmp_path))
+        binary = tmp_path / "openssl"
+        binary.write_bytes(b"pretend binary")
+        digest = hashlib.sha256(b"pretend binary").hexdigest()
+        (tmp_path / "openssl_manifest.json").write_text(json.dumps({"openssl": digest}))
+        ex._verify_bundled_binary(str(binary))  # must not raise
+
+    def test_tampered_binary_is_refused(self, monkeypatch, tmp_path):
+        import core.executor as ex
+        import json
+        monkeypatch.setattr(ex, "bundle_dir", lambda: str(tmp_path))
+        binary = tmp_path / "openssl"
+        binary.write_bytes(b"tampered")
+        (tmp_path / "openssl_manifest.json").write_text(json.dumps({"openssl": "00" * 32}))
+        with pytest.raises(RuntimeError, match="integrity check"):
+            ex._verify_bundled_binary(str(binary))
+
+    def test_corrupt_manifest_is_refused(self, monkeypatch, tmp_path):
+        import core.executor as ex
+        monkeypatch.setattr(ex, "bundle_dir", lambda: str(tmp_path))
+        binary = tmp_path / "openssl"
+        binary.write_bytes(b"whatever")
+        (tmp_path / "openssl_manifest.json").write_text("{ this is not json")
+        with pytest.raises(RuntimeError, match="unreadable"):
+            ex._verify_bundled_binary(str(binary))
+
+    def test_env_points_at_bundle(self, monkeypatch, tmp_path):
+        import core.executor as ex
+        monkeypatch.setattr(ex, "bundle_dir", lambda: str(tmp_path))
+        env = ex._bundled_openssl_env()
+        assert env["OPENSSL_MODULES"] == str(tmp_path)
+        # No openssl.cnf shipped → OPENSSL_CONF must be left alone rather than
+        # pointed at a file that does not exist.
+        assert "OPENSSL_CONF" not in env
+        (tmp_path / "openssl.cnf").write_text("# config")
+        assert ex._bundled_openssl_env()["OPENSSL_CONF"] == str(tmp_path / "openssl.cnf")
+
+    def test_cli_version_reports_resolution(self):
+        """CI's Windows gate parses exactly these fields — keep them stable."""
+        from cli.main import cmd_version
+        result = cmd_version(None)
+        assert result["success"]
+        assert "OpenSSL" in result["version"]
+        assert os.path.isfile(result["openssl_path"])
+        assert result["openssl_bundled"] is False
+
+
 class TestOpenSSLExecution:
     def test_openssl_found(self):
         path = get_openssl_path()

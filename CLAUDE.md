@@ -133,8 +133,23 @@ git push origin v1.X.Y
 - Spec uses PyInstaller `--onefile` for Windows.
 - SmartScreen warns on first run (unsigned binary) — click "More info → Run anyway".
 - Built by CI on `windows-latest`.
-- OpenSSL must be installed separately on the end-user Windows machine:
-  [Win64 OpenSSL](https://slproweb.com/products/Win32OpenSSL.html)
+- **OpenSSL is bundled — end users install nothing.** CI (`choco install openssl`,
+  version pinned via the `OPENSSL_VERSION` env var in the workflow) stages
+  `openssl.exe` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll` + `legacy.dll` into
+  `sslopencrypt/packaging/openssl-win64/`, writes `openssl_manifest.json`
+  (SHA-256 per file), and the spec adds them to the bundle root. That directory
+  is gitignored — it exists only during a build.
+- `core/executor.py` prefers the bundled binary over `PATH`, verifies its SHA-256
+  against the manifest before first use, and sets `OPENSSL_MODULES` (plus
+  `OPENSSL_CONF` when a config ships) so the compiled-in `OPENSSLDIR` from the
+  build machine is never consulted.
+- **Keep OpenSSL on 3.x.** 3.x is Apache-2.0 and GPL-v3-compatible; OpenSSL 1.x
+  used the old SSLeay licence, which is not. Never bundle a 1.x build.
+- The `Verify bundled OpenSSL (Windows)` CI step strips `PATH` before running the
+  built exe, because the runners already have openssl on `PATH` (Git for Windows,
+  Strawberry Perl) and the check would otherwise pass with the bundle missing
+  entirely. It asserts `openssl_bundled: true` from `--cli --mode version`.
+- Linux and macOS deliberately keep using the system openssl.
 
 ---
 
