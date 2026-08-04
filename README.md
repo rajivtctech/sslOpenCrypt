@@ -33,7 +33,7 @@ Grab the binary for your platform from the [latest release](https://github.com/r
 |---|---|---|
 | **Windows 10 / 11** | `sslOpenCrypt-Windows.exe` — double-click | **Bundled.** Nothing to install. |
 | **Linux x86_64** | `sslOpenCrypt-Linux.AppImage` — `chmod +x`, then run | System `openssl` (preinstalled on every mainstream distro) |
-| **macOS 14+ (arm64)** | `sslOpenCrypt-macOS` — `chmod +x`, right-click → Open | System `openssl`, or `brew install openssl` |
+| **macOS 14+ (arm64)** | `sslOpenCrypt-macOS` — `chmod +x`, right-click → Open | `brew install openssl` recommended — macOS's own `/usr/bin/openssl` is LibreSSL |
 
 Windows ships its own OpenSSL 3.x inside the executable, because installing OpenSSL on Windows otherwise means hunting down a third-party installer. The bundled copy takes priority over anything on `PATH`, and its SHA-256 is checked against a manifest recorded at build time before it is ever executed — a mismatch aborts rather than running an unverified crypto binary. To see which one is in use:
 

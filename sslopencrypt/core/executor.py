@@ -130,6 +130,11 @@ def get_openssl_path() -> str:
             r"C:\Program Files\OpenSSL-Win64\bin\openssl.exe",
             r"C:\Program Files\OpenSSL\bin\openssl.exe",
         ]
+    elif sys.platform == "darwin":
+        # Homebrew first: /usr/bin/openssl on macOS is LibreSSL, which is
+        # missing pieces this app relies on. Checking it first would mean a
+        # user's `brew install openssl` never took effect.
+        candidates = ["/opt/homebrew/bin/openssl", "/usr/local/bin/openssl", "/usr/bin/openssl"]
     else:
         candidates = ["/usr/bin/openssl", "/usr/local/bin/openssl", "/opt/homebrew/bin/openssl"]
     for candidate in candidates:

@@ -209,7 +209,9 @@ jobs:
             exit 1
           }
 
-          $raw = & "./${{ matrix.asset_name }}" --cli --mode version --pretty 2>&1 | Out-String
+          # stdout only. Merging stderr in would let any bootloader or Qt
+          # warning turn a good build into a JSON parse error.
+          $raw = & "./${{ matrix.asset_name }}" --cli --mode version --pretty | Out-String
           Write-Host $raw
           $info = $raw | ConvertFrom-Json
 
